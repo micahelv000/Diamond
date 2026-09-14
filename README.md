@@ -1,6 +1,3 @@
-Here’s a polished version that keeps your meaning and adds the idea of using the newest technologies and tools:
-
- Diamond README✓
 
 # Diamond
 
@@ -9,7 +6,7 @@ Here’s a polished version that keeps your meaning and adds the idea of using t
  ## 📁 Repository Structure
 
 ```
-diamond/
+Diamond/
 ├── utilities/          # Reusable tools, scripts, and helpers
 ├── developments/       # Active projects and implementations
 ├── experiments/        # Prototypes and experimental work
