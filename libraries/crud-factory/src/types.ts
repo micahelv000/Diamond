@@ -82,7 +82,7 @@ export interface Entity<T extends PgTable, C extends EntityConfig<T>> extends An
 }
 
 /** Flattens a computed object type so hovers show its fields. */
-export type Simplify<T> = { [K in keyof T]: T[K] } & {};
+type Simplify<T> = { [K in keyof T]: T[K] } & {};
 
 /** Marks keys as `never` so an `.extend()` factory can't override a built-in method by name. */
 export type NoOverride<K extends PropertyKey> = { [P in K]?: never };
@@ -99,8 +99,8 @@ type Config<E extends AnyEntity> = E['config'];
 // The string union in a config list, or `never` when the option is missing.
 type KeysIn<V> = V extends readonly (infer K extends string)[] ? K : never;
 
-export type HiddenKey<E extends AnyEntity> = KeysIn<Config<E>['hidden']>;
-export type PrimaryKey<E extends AnyEntity> = Config<E>['primaryKey'];
+type HiddenKey<E extends AnyEntity> = KeysIn<Config<E>['hidden']>;
+type PrimaryKey<E extends AnyEntity> = Config<E>['primaryKey'];
 export type VisibleKey<E extends AnyEntity> = Exclude<ColumnKey<TableOf<E>>, HiddenKey<E>>;
 /** A sort key for code queries: any visible column, with a leading `-` for descending. */
 export type SortSpec<E extends AnyEntity> = VisibleKey<E> | `-${VisibleKey<E>}`;

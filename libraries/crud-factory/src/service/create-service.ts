@@ -153,7 +153,7 @@ export function createService<E extends AnyEntity, TAuth = unknown, R extends Cr
   const { hooks = {} } = options;
   const entity = repository.entity.name;
 
-  async function logged<R>(op: ServiceMethod, ctx: ServiceContext<TAuth>, id: PrimaryKeyValue<E> | undefined, call: () => Promise<R>): Promise<R> {
+  async function logged<T>(op: ServiceMethod, ctx: ServiceContext<TAuth>, id: PrimaryKeyValue<E> | undefined, call: () => Promise<T>): Promise<T> {
     const started = performance.now();
     try {
       const result = await call();
@@ -188,7 +188,7 @@ export function createService<E extends AnyEntity, TAuth = unknown, R extends Cr
     findMany,
     ...buildFinders<ServiceFinders<E, TAuth>, [ctx: ServiceContext<TAuth>, options?: ListOptions<E>]>(
       repository.entity,
-      (where, [ctx, options = {}]) => findMany({ ...options, where: where(options.where) }, ctx),
+      (where, [ctx, listOptions = {}]) => findMany({ ...listOptions, where: where(listOptions.where) }, ctx),
     ),
     findById: (id, findOptions, ctx) =>
       logged('findById', ctx, id, () => repository.findById(id, { ...findOptions, ...queryOptions(ctx) })),

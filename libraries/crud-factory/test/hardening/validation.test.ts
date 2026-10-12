@@ -343,7 +343,7 @@ describe('defineEntity config errors', () => {
   });
 
   test('a non-timestamp softDelete column throws', () => {
-    expect(() => defineUntyped(kinds, { ...base, softDelete: 'intN' })).toThrow();
+    expect(() => defineUntyped(kinds, { ...base, softDelete: 'intN' })).toThrow(/softDelete/);
   });
 
   test('a fractional, zero or negative limit throws', () => {

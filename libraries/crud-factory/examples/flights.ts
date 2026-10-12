@@ -92,7 +92,7 @@ type FlightSort = readonly SortSpec<typeof flightEntity>[];
 // `run` logs the SQL and maps database errors. `orderBy(sort)` uses the given sort or `defaultSort`.
 const origin = alias(airports, 'origin');
 const destination = alias(airports, 'destination');
-const flightRepo = createRepository(db, flightEntity).extend(({ db, table, baseWhere, project, run, orderBy }) => ({
+const flightRepo = createRepository(db, flightEntity).extend(({ table, baseWhere, project, run, orderBy }) => ({
   findDetails: async (id: number, { scope, tx, log }: QueryOptions = {}) => {
     const [row] = await run((tx ?? db)
       .select({ ...project(), originName: origin.name, destinationName: destination.name, aircraftModel: aircraft.model })

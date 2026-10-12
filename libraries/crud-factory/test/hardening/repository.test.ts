@@ -282,7 +282,7 @@ describe('real database errors map to client errors', () => {
   ])('%s', async (_label, run, expected, constraint) => {
     const error = await rejection(run());
     expect(error).toBeInstanceOf(expected);
-    if (constraint) expect(error).toMatchObject({ constraint });
+    expect(error).toMatchObject(constraint ? { constraint } : {});
   });
 
   test('23P01 exclusion violation is a ConflictError naming the constraint', async () => {

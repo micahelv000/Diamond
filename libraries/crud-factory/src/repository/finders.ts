@@ -8,7 +8,7 @@ import { filterToSql, whereToSql } from './utils.ts';
 const SUFFIX: FinderSuffix = { eq: '', in: 'In', ilike: 'Containing', gte: 'From', lte: 'Until' };
 
 /** Builds a finder method name from a column name and an operator. */
-export function finderName(column: string, operator: FilterOperator | 'between'): string {
+function finderName(column: string, operator: FilterOperator | 'between'): string {
   const suffix = operator === 'between' ? 'Between' : SUFFIX[operator];
   return `findBy${column.charAt(0).toUpperCase()}${column.slice(1)}${suffix}`;
 }

@@ -1,6 +1,6 @@
 import { index, integer, pgEnum, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 
-export const userStatus = pgEnum('user_status', ['active', 'invited', 'banned']);
+const userStatus = pgEnum('user_status', ['active', 'invited', 'banned']);
 
 export const users = pgTable('users', {
   id: integer().primaryKey().generatedAlwaysAsIdentity(),
