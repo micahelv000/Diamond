@@ -4,12 +4,13 @@ The core of this service is a dynamic Repository Factory. When instructed to sca
 2. **Type Inference:** Base CRUD operations (`create`, `findMany`, `findById`, `update`, `delete`) must strictly type their inputs and outputs using Drizzle's `$inferSelect<T>` and `$inferInsert<T>` corresponding to the entity.
 3. **Extensibility (The Custom Query Hook):** The generated repository must expose a clean extension mechanism (e.g., class inheritance or a composable function API) to allow the injection of custom, entity-specific complex queries (joins, window functions) without modifying or overriding the base factory CRUD methods.
 4. **Dynamic SQL Operators:** Ensure the generic `findMany` and `update` methods support dynamic `where` clauses using Drizzle's `SQL` chunks and operators (`eq`, `inArray`, `ilike`).
+   - Request/response validation is Zod (schemas derived from the table via `drizzle-orm/zod`), not TypeBox.
 
 # Delegation Workflow
 Follow this exact sequential pipeline for all new feature requests:
 1. **Plan:** Outline the required Drizzle schema, the factory instantiation logic, and the Fastify routing layer.
 2. **Execute Schema & Factory (Agent Task):** Delegate database schema creation and repository instantiation to a subagent. Explicitly mandate the `drizzle-best-practices` skill in the prompt.
-3. **Execute API Routing (Agent Task):** Once the database layer is complete, delegate the Fastify route creation and TypeBox schema generation to a subagent. Explicitly mandate the `fastify-best-practise` skill in the prompt.
+3. **Execute API Routing (Agent Task):** Once the database layer is complete, delegate the Fastify route creation and Zod schema generation (via `drizzle-orm/zod` + `fastify-type-provider-zod`) to a subagent. Explicitly mandate the `fastify-best-practise` skill in the prompt.
 4. **Review & Audit:** Wait for the subagents to finish, review their file outputs, and if necessary, trigger the `code-reviewer` subagent to audit the implementation for context leakage or N+1 queries.`
 
 
