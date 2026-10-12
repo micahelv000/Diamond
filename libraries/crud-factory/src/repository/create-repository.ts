@@ -8,7 +8,7 @@ import { buildFinders } from './finders.ts';
 import { selection, typedColumns, typedRows, visibleColumns, type ColumnMap } from './projection.ts';
 import { orderBy } from './sort.ts';
 import type { CrudRepository, CrudRepositoryBase, CrudRepositoryMethods, RepositoryInternals, RunnableQuery } from './types.ts';
-import { whereToSql } from './where.ts';
+import { whereToSql } from './utils.ts';
 
 async function mapErrors<R>(query: () => Promise<R>): Promise<R> {
   try {
@@ -97,7 +97,7 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
 
   const baseWhere = (scope?: SQL): SQL | undefined =>
     and(softDeleteColumn ? isNull(softDeleteColumn) : undefined, scope);
-  const byId = (id: unknown, scope?: SQL) => and(eq(primaryColumn, id), baseWhere(scope));
+  const byId = (id: PrimaryKeyValue<E>, scope?: SQL) => and(eq(primaryColumn, id), baseWhere(scope));
   const run = <R>(log: Logger | undefined, query: RunnableQuery<R>) => execute(log, name, query, () => query.toSQL().sql);
   const sortBy = (sort?: readonly string[]) => orderBy(visible, sort ?? defaultSort, config.primaryKey);
 

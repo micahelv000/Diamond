@@ -8,16 +8,16 @@ import type { ColumnMap } from './projection.ts';
  */
 export function orderBy(columns: ColumnMap, specs: readonly string[], primaryKey: string): SQL[] {
   const clauses: SQL[] = [];
-  let sortsByPrimaryKey = false;
+  const sortedKeys: string[] = [];
   for (const spec of specs) {
     const descending = spec.startsWith('-');
     const key = descending ? spec.slice(1) : spec;
     const column = Object.hasOwn(columns, key) ? columns[key] : undefined;
     if (!column) throw new BadRequestError(`Cannot sort by "${key}"`);
     clauses.push(descending ? desc(column) : asc(column));
-    sortsByPrimaryKey ||= key === primaryKey;
+    sortedKeys.push(key);
   }
   const primaryColumn = columns[primaryKey];
-  if (!sortsByPrimaryKey && primaryColumn) clauses.push(asc(primaryColumn));
+  if (primaryColumn && !sortedKeys.includes(primaryKey)) clauses.push(asc(primaryColumn));
   return clauses;
 }

@@ -6,10 +6,10 @@ import type { AuthorizationResult, AuthorizeMap, Operation } from './types.ts';
  * are combined with AND. With no rules, the operation is allowed.
  */
 export async function evaluateAuthorization<TCtx>(args: {
-  rules: AuthorizeMap<TCtx> | undefined;
+  rules?: AuthorizeMap<TCtx>;
   op: Operation;
-  ctx: TCtx | undefined;
-  id?: unknown;
+  ctx?: TCtx;
+  id?: number;
   input?: unknown;
 }): Promise<AuthorizationResult> {
   const { rules, op, ctx, id, input } = args;

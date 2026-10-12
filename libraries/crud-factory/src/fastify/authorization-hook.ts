@@ -39,8 +39,8 @@ declare module 'fastify' {
   }
 }
 
-function paramId(params: unknown): unknown {
-  return typeof params === 'object' && params !== null && 'id' in params ? params.id : undefined;
+function paramId(params: unknown): number | undefined {
+  return typeof params === 'object' && params !== null && 'id' in params && typeof params.id === 'number' ? params.id : undefined;
 }
 
 /**
@@ -60,11 +60,10 @@ export function createAuthorizationHook<TCtx>(options: AuthorizationHookOptions<
       op,
       ctx: auth,
       id: paramId(request.params),
-      // Runs after validation, so the body is already parsed.
       input: op === 'create' || op === 'update' ? request.body : undefined,
     });
     // Logs only the outcome, because the user and the body may hold personal data.
-    request.log.debug({ op, decision: result.kind, anonymous: auth === undefined }, 'authorization');
+    request.log.debug({ op, decision: result.kind, auth}, 'authorization');
 
     switch (result.kind) {
       case 'unauthenticated':

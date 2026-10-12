@@ -24,6 +24,10 @@ describe('crudRoutes types', () => {
           expectTypeOf(ctx).toEqualTypeOf<TestUser | undefined>();
           return true;
         },
+        update: ({ id }) => {
+          expectTypeOf(id).toEqualTypeOf<number | undefined>();
+          return true;
+        },
       },
       extend: (scope, { serviceContext }) => {
         expectTypeOf(serviceContext).returns.toEqualTypeOf<ServiceContext<TestUser>>();

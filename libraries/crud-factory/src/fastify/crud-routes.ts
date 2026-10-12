@@ -8,6 +8,7 @@ import type { Database } from '../types.ts';
 import { createAuthorizationHook } from './authorization-hook.ts';
 import { crudErrorHandler, type ErrorBody } from './error-handler.ts';
 import type { CrudEntity, CrudRoutesOptions } from './options.ts';
+import { isOperationEnabled } from './utils.ts';
 
 // Fastify's request part types can't be resolved while the entity is generic. The validator has already
 // parsed the value with this schema before the handler runs, so the cast is safe.
@@ -66,11 +67,6 @@ function wrapHandlerInTransaction(db: Database, routeOptions: RouteOptions): voi
       }
     });
   };
-}
-
-function isEnabled(op: Operation, operations: { only?: readonly Operation[]; except?: readonly Operation[] } = {}) {
-  const { only, except } = operations;
-  return (only === undefined || only.includes(op)) && !except?.includes(op);
 }
 
 /**
@@ -137,7 +133,7 @@ export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudSe
       instance.log.warn(`${where} routes have authorize but no context: every request is anonymous (401)`);
     }
 
-    if (isEnabled('list', operations)) {
+    if (isOperationEnabled('list', operations)) {
       instance.get(
         '/',
         { ...route('list'), schema: { querystring: schemas.listQuery, response: { 200: schemas.listResult } } },
@@ -145,7 +141,7 @@ export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudSe
       );
     }
 
-    if (isEnabled('get', operations)) {
+    if (isOperationEnabled('get', operations)) {
       instance.get(
         '/:id',
         {
@@ -162,7 +158,7 @@ export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudSe
       );
     }
 
-    if (isEnabled('create', operations)) {
+    if (isOperationEnabled('create', operations)) {
       instance.post(
         '/',
         { ...route('create'), schema: { body: schemas.create, response: { 201: schemas.read } } },
@@ -175,7 +171,7 @@ export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudSe
       );
     }
 
-    if (isEnabled('update', operations)) {
+    if (isOperationEnabled('update', operations)) {
       instance.patch(
         '/:id',
         { ...route('update'), schema: { params: schemas.params, body: schemas.update, response: { 200: schemas.read } } },
@@ -183,7 +179,7 @@ export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudSe
       );
     }
 
-    if (isEnabled('delete', operations)) {
+    if (isOperationEnabled('delete', operations)) {
       instance.delete('/:id', { ...route('delete'), schema: { params: schemas.params } }, async (request, reply) => {
         await service.delete(idOf(request), serviceContext(request));
         // Fastify sends the empty response once this resolves, after the commit.

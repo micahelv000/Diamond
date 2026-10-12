@@ -153,7 +153,7 @@ export function createService<E extends AnyEntity, TAuth = unknown, R extends Cr
   const { hooks = {} } = options;
   const entity = repository.entity.name;
 
-  async function logged<R>(op: ServiceMethod, ctx: ServiceContext<TAuth>, id: unknown, call: () => Promise<R>): Promise<R> {
+  async function logged<R>(op: ServiceMethod, ctx: ServiceContext<TAuth>, id: PrimaryKeyValue<E> | undefined, call: () => Promise<R>): Promise<R> {
     const started = performance.now();
     try {
       const result = await call();

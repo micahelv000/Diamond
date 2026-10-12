@@ -10,7 +10,7 @@ export interface RuleArgs<TCtx> {
   /** The operation being attempted. */
   op: Operation;
   /** The id from the URL. Set only for `get`, `update` and `delete`. */
-  id?: unknown;
+  id?: number;
   /** The validated request body for `create` and `update`, before any service hook changes it. */
   input?: unknown;
 }
