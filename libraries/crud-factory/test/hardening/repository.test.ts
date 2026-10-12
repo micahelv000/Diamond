@@ -1,6 +1,5 @@
 // Edge cases for the repository against a real Postgres (PGlite): finders, sorting, paging, scope,
 // soft delete, hidden columns, `extend` and the SQLSTATE mapping.
-// A `test.fails` asserts the CORRECT behaviour and documents a known bug (see the `// BUG:` line above it).
 import { PGlite } from '@electric-sql/pglite';
 import { asc, eq, sql, type SQL } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
@@ -134,8 +133,7 @@ describe('finders', () => {
     expect((await repo.findMany({ withTotal: true })).total).toBe(5);
   });
 
-  // BUG: `filterable[column]` reads Object.prototype, so 'constructor__eq' reaches `.find` on a function: TypeError, a 500.
-  test.fails('a filter key naming an Object.prototype member is a BadRequestError', async () => {
+  test('a filter key naming an Object.prototype member is a BadRequestError', async () => {
     expect(await rejection(repo.findMany({ where: untyped({ constructor__eq: 1 }) }))).toBeInstanceOf(BadRequestError);
   });
 });
@@ -145,8 +143,7 @@ describe('sort', () => {
     expect(await rejection(repo.findMany({ sort: untyped(['nope']) }))).toBeInstanceOf(BadRequestError);
   });
 
-  // BUG: `columns[key]` reads Object.prototype, so 'constructor' is accepted and sent as `order by $1`, silently unsorted.
-  test.fails('a sort key naming an Object.prototype member is a BadRequestError', async () => {
+  test('a sort key naming an Object.prototype member is a BadRequestError', async () => {
     expect(await rejection(repo.findMany({ sort: untyped(['constructor']) }))).toBeInstanceOf(BadRequestError);
   });
 

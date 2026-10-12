@@ -12,7 +12,7 @@ export function orderBy(columns: ColumnMap, specs: readonly string[], primaryKey
   for (const spec of specs) {
     const descending = spec.startsWith('-');
     const key = descending ? spec.slice(1) : spec;
-    const column = columns[key];
+    const column = Object.hasOwn(columns, key) ? columns[key] : undefined;
     if (!column) throw new BadRequestError(`Cannot sort by "${key}"`);
     clauses.push(descending ? desc(column) : asc(column));
     sortsByPrimaryKey ||= key === primaryKey;

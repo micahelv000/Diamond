@@ -39,9 +39,9 @@ export function filterToSql(columns: Columns, filterable: FilterableConfig, filt
   for (const [key, value] of Object.entries(filter)) {
     if (value === undefined) continue;
     const { column, operator } = parseFilterKey(key);
-    const allowed: readonly FilterOperator[] = filterable[column] ?? [];
+    const allowed: readonly FilterOperator[] = Object.hasOwn(filterable, column) ? filterable[column] ?? [] : [];
     const allowedOperator = allowed.find((candidate) => candidate === operator);
-    const target = columns[column];
+    const target = Object.hasOwn(columns, column) ? columns[column] : undefined;
     if (!allowedOperator || !target) throw new BadRequestError(`Filter "${key}" is not allowed`);
     conditions.push(operatorSql(target, allowedOperator, value));
   }

@@ -23,7 +23,7 @@ async function mapErrors<R>(query: () => Promise<R>): Promise<R> {
  * constraint violations the same 409/400 errors as the base methods instead of a 500.
  * Non-promise results are returned untouched.
  */
-function withMappedErrors<X extends object>(methods: X): X {
+export function withMappedErrors<X extends object>(methods: X): X {
   const wrapped = { ...methods };
   for (const key of Object.keys(wrapped)) {
     const method: unknown = Reflect.get(wrapped, key);

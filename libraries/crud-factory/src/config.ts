@@ -56,14 +56,22 @@ function validateConfig(tableName: string, table: PgTable, config: EntityConfig<
   }
   for (const [key, operators = []] of filterable) {
     const unknown = operators.find((operator) => !FILTER_OPERATORS.includes(operator));
-    if (unknown) throw new Error(`${tableName}: filterable.${key} has unknown operator "${unknown}"`);
-    const columnType = columns[key]?.columnType ?? '';
-    if (operators.includes('ilike') && !TEXT_COLUMN_TYPES.has(columnType)) {
+    if (unknown !== undefined) throw new Error(`${tableName}: filterable.${key} has unknown operator "${unknown}"`);
+    const column = columns[key];
+    if (operators.includes('ilike') && !(column && TEXT_COLUMN_TYPES.has(column.columnType) && column.dimensions === 0)) {
       throw new Error(`${tableName}: filterable.${key} uses ilike, which needs a text column`);
     }
   }
   const softDeleteColumn = config.softDelete ? columns[config.softDelete] : undefined;
   if (softDeleteColumn?.notNull) throw new Error(`${tableName}: softDelete column must be nullable`);
+  if (softDeleteColumn && !softDeleteColumn.getSQLType().startsWith('timestamp')) {
+    throw new Error(`${tableName}: softDelete column must be a timestamp`);
+  }
+  for (const [option, limit] of Object.entries(config.pagination ?? {})) {
+    if (limit !== undefined && !(Number.isInteger(limit) && limit > 0)) {
+      throw new Error(`${tableName}: pagination.${option} must be a positive integer`);
+    }
+  }
 }
 
 // `EntityConfig<T> &` adds no constraint; it makes hovers on config fields show their docs.

@@ -126,6 +126,16 @@ describe('service.extend', () => {
     expect((await chained.rename(created.id, 'Once', { log })).name).toBe('Once');
     expect((await chained.renameTwice(created.id, { log })).name).toBe('Second');
   });
+
+  test('a unique violation in a custom method is a ConflictError', async () => {
+    const raw = service.extend(() => ({
+      insertRaw: async () => {
+        await db.insert(users).values({ email: 'dup@b.c', name: 'A', orgId: 1, passwordHash: 'x' });
+      },
+    }));
+    await raw.insertRaw();
+    await expect(raw.insertRaw()).rejects.toBeInstanceOf(ConflictError);
+  });
 });
 
 describe('write hooks', () => {

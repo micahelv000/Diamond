@@ -1,5 +1,6 @@
 import type { SQL } from 'drizzle-orm';
 import { CrudFactoryError } from '../errors.ts';
+import { withMappedErrors } from '../repository/create-repository.ts';
 import { buildFinders } from '../repository/finders.ts';
 import type { CrudRepository } from '../repository/types.ts';
 import type {
@@ -217,7 +218,7 @@ export function createService<E extends AnyEntity, TAuth = unknown, R extends Cr
   const build = <X extends object>(methods: CrudServiceBase<E, TAuth, R> & X): CrudService<E, TAuth, R, X> => {
     const current: CrudService<E, TAuth, R, X> = {
       ...methods,
-      extend: <Y extends object>(factory: (base: CrudService<E, TAuth, R, X>) => Y) => build<X & Y>({ ...methods, ...factory(current) }),
+      extend: <Y extends object>(factory: (base: CrudService<E, TAuth, R, X>) => Y) => build<X & Y>({ ...methods, ...withMappedErrors(factory(current)) }),
     };
     return current;
   };

@@ -1,5 +1,4 @@
 // Edge cases for the Zod schemas `defineEntity` derives from a table, and for its config checks.
-// A `test.fails` asserts the CORRECT behaviour and documents a known bug (see the `// BUG:` line above it).
 import {
   bigint, boolean, date, doublePrecision, integer, json, numeric, pgEnum, pgTable, real, text, timestamp, uuid, varchar,
 } from 'drizzle-orm/pg-core';
@@ -335,23 +334,21 @@ describe('defineEntity config errors', () => {
     expect(() => defineUntyped(kinds, { ...base, defaultSort: '-' })).toThrow('defaultSort references unknown column ""');
   });
 
-  // BUG: the operator check uses `find`, whose result '' is falsy, so an empty-string operator slips through.
-  test.fails("an empty-string operator throws", () => {
+  test("an empty-string operator throws", () => {
     expect(() => defineUntyped(kinds, { ...base, filterable: { txt: ['eq', ''] } })).toThrow('unknown operator');
   });
 
-  // BUG: a text[] column reports the PgText column type, so ilike is allowed; Postgres has no `text[] ILIKE text` (500 per query).
-  test.fails('ilike on a text[] column throws', () => {
+  test('ilike on a text[] column throws', () => {
     expect(() => defineUntyped(kinds, { ...base, filterable: { tags: ['ilike'] } })).toThrow('uses ilike');
   });
 
-  // BUG: softDelete is documented as a nullable timestamp, but any nullable column is accepted.
-  test.fails('a non-timestamp softDelete column throws', () => {
+  test('a non-timestamp softDelete column throws', () => {
     expect(() => defineUntyped(kinds, { ...base, softDelete: 'intN' })).toThrow();
   });
 
-  // BUG: pagination isn't checked at startup; a fractional limit fails every list query instead.
-  test.fails('a fractional maxLimit throws', () => {
-    expect(() => defineUntyped(kinds, { ...base, pagination: { maxLimit: 2.5 } })).toThrow();
+  test('a fractional, zero or negative limit throws', () => {
+    for (const pagination of [{ maxLimit: 2.5 }, { maxLimit: 0 }, { defaultLimit: -1 }]) {
+      expect(() => defineUntyped(kinds, { ...base, pagination })).toThrow('must be a positive integer');
+    }
   });
 });
