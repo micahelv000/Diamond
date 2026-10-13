@@ -1,7 +1,7 @@
 import type { SQL } from 'drizzle-orm';
 import { CrudFactoryError } from '../errors.ts';
-import { withMappedErrors } from '../repository/create-repository.ts';
-import { buildFinders } from '../repository/finders.ts';
+import { withExtend } from '../extend.ts';
+import { buildFinders, typedFinders, type FinderMethods } from '../repository/finders.ts';
 import type { CrudRepository } from '../repository/types.ts';
 import type {
   AnyEntity,
@@ -161,6 +161,10 @@ export type CrudService<
 
 type ServiceMethod = 'findMany' | 'findById' | 'create' | 'update' | 'delete';
 
+function elapsedMs(started: number): number {
+  return Math.round(performance.now() - started);
+}
+
 /**
  * Wraps a repository with hooks and logging. Only ids and timings are logged, never values.
  * If you pass type arguments yourself, pass the repository's type third to keep its custom methods typed.
@@ -177,13 +181,13 @@ export function createService<E extends AnyEntity, TAuth = unknown, R extends Cr
     const started = performance.now();
     try {
       const result = await call();
-      ctx.log.debug({ entity, op, id, durationMs: Math.round(performance.now() - started) }, 'repository call');
+      ctx.log.debug({ entity, op, id, durationMs: elapsedMs(started) }, 'repository call');
       return result;
     } catch (error) {
       if (error instanceof CrudFactoryError) {
         // Client errors (4xx) are logged at debug level so they don't trigger alerts.
         const level = error.statusCode < 500 ? 'debug' : 'warn';
-        ctx.log[level]({ entity, op, id, code: error.code, durationMs: Math.round(performance.now() - started) }, error.message);
+        ctx.log[level]({ entity, op, id, code: error.code, durationMs: elapsedMs(started) }, error.message);
       }
       throw error;
     }
@@ -202,14 +206,23 @@ export function createService<E extends AnyEntity, TAuth = unknown, R extends Cr
   const findMany: CrudServiceMethods<E, TAuth, R>['findMany'] = (listOptions, ctx) =>
     logged('findMany', ctx, undefined, () => repository.findMany({ ...listOptions, ...queryOptions(ctx) }));
 
+  const finders: FinderMethods = {};
+  for (const finder of buildFinders(repository.entity)) {
+    // `async` so an invalid value or extra `where` rejects the promise instead of throwing synchronously.
+    if (finder.valueCount === 1) {
+      finders[finder.name] = async (value: unknown, ctx: ServiceContext<TAuth>, listOptions: ListOptions<E> = {}) =>
+        findMany({ ...listOptions, where: finder.toWhere([value], listOptions.where) }, ctx);
+    } else {
+      finders[finder.name] = async (from: unknown, to: unknown, ctx: ServiceContext<TAuth>, listOptions: ListOptions<E> = {}) =>
+        findMany({ ...listOptions, where: finder.toWhere([from, to], listOptions.where) }, ctx);
+    }
+  }
+
   const service: CrudServiceBase<E, TAuth, R> = {
     entity: repository.entity,
     repository,
     findMany,
-    ...buildFinders<ServiceFinders<E, TAuth>, [ctx: ServiceContext<TAuth>, options?: ListOptions<E>]>(
-      repository.entity,
-      (where, [ctx, listOptions = {}]) => findMany({ ...listOptions, where: where(listOptions.where) }, ctx),
-    ),
+    ...typedFinders<ServiceFinders<E, TAuth>>(finders),
     findById: (id, findOptions, ctx) =>
       logged('findById', ctx, id, () => repository.findById(id, { ...findOptions, ...queryOptions(ctx) })),
     // The hooks run inside `logged`, so their errors are logged like the write's own.
@@ -234,11 +247,11 @@ export function createService<E extends AnyEntity, TAuth = unknown, R extends Cr
       }),
   };
 
-  // `X` accumulates the types of added methods, so chained `extend` calls keep earlier ones.
+  // `X` collects the types of all methods added so far; see `withExtend`.
   const build = <X extends object>(methods: CrudServiceBase<E, TAuth, R> & X): CrudService<E, TAuth, R, X> => {
     const current: CrudService<E, TAuth, R, X> = {
       ...methods,
-      extend: <Y extends object>(factory: (base: CrudService<E, TAuth, R, X>) => Y) => build<X & Y>({ ...methods, ...withMappedErrors(factory(current)) }),
+      extend: <Y extends object>(factory: (base: CrudService<E, TAuth, R, X>) => Y) => build<X & Y>(withExtend(methods, factory(current))),
     };
     return current;
   };

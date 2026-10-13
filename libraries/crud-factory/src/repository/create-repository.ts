@@ -4,14 +4,15 @@ import { BadRequestError, ConflictError, findPostgresError, mapDatabaseError, No
 import type {
   AnyEntity, Database, ListOptions, Logger, PaginationConfig, PrimaryKeyValue, QueryOptions, RepositoryFinders, Row, VisibleKey,
 } from '../types.ts';
-import { buildFinders } from './finders.ts';
+import { withExtend } from '../extend.ts';
+import { buildFinders, typedFinders, type FinderMethods } from './finders.ts';
 import { pickFields, selection, typedColumns, typedRows, visibleColumns, type ColumnMap } from './projection.ts';
 import { createKeyset } from './cursor.ts';
-import { orderBy, sortKeys } from './sort.ts';
+import { orderBy, sortKeys, type SortKey } from './sort.ts';
 import type { CrudRepository, CrudRepositoryBase, CrudRepositoryMethods, RepositoryInternals, RunnableQuery, ScopedQuery } from './types.ts';
 import { whereToSql } from './utils.ts';
 
-async function mapErrors<R>(query: () => Promise<R>): Promise<R> {
+async function withErrorMapping<R>(query: () => Promise<R>): Promise<R> {
   try {
     return await query();
   } catch (error) {
@@ -20,30 +21,10 @@ async function mapErrors<R>(query: () => Promise<R>): Promise<R> {
 }
 
 /**
- * Wraps methods added with `extend` so their rejected promises go through `mapDatabaseError`, giving
- * constraint violations the same 409/400 errors as the base methods instead of a 500.
- * Non-promise results are returned untouched.
- */
-export function withMappedErrors<X extends object>(methods: X): X {
-  const wrapped = { ...methods };
-  for (const key of Object.keys(wrapped)) {
-    const method: unknown = Reflect.get(wrapped, key);
-    if (typeof method !== 'function') continue;
-    // TypeScript can't type an index assignment on a generic `X`, so `Reflect.set` is used. The wrapper
-    // keeps the same arguments, `this` and result, so the value still matches `X`.
-    Reflect.set(wrapped, key, function (this: unknown, ...args: unknown[]): unknown {
-      const result: unknown = Reflect.apply(method, this, args);
-      return result instanceof Promise ? result.catch((error: unknown) => { throw mapDatabaseError(error); }) : result;
-    });
-  }
-  return wrapped;
-}
-
-/**
  * Runs one statement and, if a logger is given, logs its SQL text and duration at `debug`.
  * Parameter values are never logged. Failed statements are logged too.
  */
-async function execute<R>(log: Logger | undefined, entity: string, statement: PromiseLike<R>, sqlText: () => string): Promise<R> {
+async function logStatement<R>(log: Logger | undefined, entity: string, statement: PromiseLike<R>, sqlText: () => string): Promise<R> {
   const started = performance.now();
   try {
     return await statement;
@@ -83,6 +64,18 @@ function resolveLimit(requested: number | undefined, { defaultLimit = 25, maxLim
   return Math.min(atLeastOne, maxLimit);
 }
 
+/** The page size and offset for a list call. A cursor can't be combined with a non-zero offset. */
+function pageWindow(options: Pick<ListOptions<AnyEntity>, 'limit' | 'offset' | 'cursor'>, pagination: PaginationConfig | undefined): { limit: number; offset: number } {
+  const limit = resolveLimit(options.limit, pagination);
+  let offset = 0;
+  if (options.offset !== undefined && Number.isFinite(options.offset)) offset = Math.max(options.offset, 0);
+  if (options.cursor !== undefined && offset > 0) throw new BadRequestError('Use either cursor or offset, not both');
+  return { limit, offset };
+}
+
+/** What one list page selects: its columns, sort keys, full WHERE and window. */
+interface PageQuery { columns: ColumnMap; keys: readonly SortKey[]; where: SQL | undefined; limit: number; offset: number }
+
 /** Creates a typed CRUD repository for an entity. Works with any async Postgres drizzle database. */
 export function createRepository<E extends AnyEntity>(db: Database, entity: E): CrudRepository<E> {
   const table: PgTable = entity.table;
@@ -94,38 +87,47 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
   const softDeleteValues = config.softDelete ? { [config.softDelete]: sql`now()` } : undefined;
   const defaultSort = config.defaultSort ? [config.defaultSort] : [];
 
+  const executorFor = (options: QueryOptions): Database => options.tx ?? db;
   const baseWhere = (scope?: SQL): SQL | undefined =>
     and(softDeleteColumn ? isNull(softDeleteColumn) : undefined, scope);
   const byId = (id: PrimaryKeyValue<E>, scope?: SQL) => and(eq(primaryColumn, id), baseWhere(scope));
-  const run = <R>(log: Logger | undefined, query: RunnableQuery<R>) => execute(log, name, query, () => query.toSQL().sql);
+  const runStatement = <R>(log: Logger | undefined, query: RunnableQuery<R>) => logStatement(log, name, query, () => query.toSQL().sql);
   const sortBy = (sort?: readonly string[]) => orderBy(sortKeys(visible, sort ?? defaultSort, config.primaryKey));
   const keyset = createKeyset(table);
 
-  const findMany: CrudRepositoryMethods<E>['findMany'] = (options = {}) =>
-    mapErrors(async () => {
-      const executor = options.tx ?? db;
-      const where = and(baseWhere(options.scope), whereToSql(visible, config.filterable ?? {}, options.where));
-      const limit = resolveLimit(options.limit, config.pagination);
-      const offset = options.offset !== undefined && Number.isFinite(options.offset) ? Math.max(options.offset, 0) : 0;
-      if (options.cursor !== undefined && offset > 0) throw new BadRequestError('Use either cursor or offset, not both');
+  // Scope, soft delete and the caller's filters, but not the cursor, so the total covers every page.
+  const listWhere = (options: ListOptions<E> & QueryOptions) =>
+    and(baseWhere(options.scope), whereToSql(visible, config.filterable ?? {}, options.where));
 
+  const cursorWhere = (cursor: string | undefined, sort: readonly string[], keys: readonly SortKey[]) => {
+    if (cursor === undefined) return undefined;
+    return keyset.after(keys, keyset.decode(cursor, sort, keys));
+  };
+
+  // Fetches one row more than the limit, to tell whether another page follows.
+  const fetchPage = (options: QueryOptions, page: PageQuery) => {
+    const select = executorFor(options).select({ ...page.columns, ...keyset.fields(page.keys) }).from(table).where(page.where);
+    return runStatement(options.log, select.orderBy(...orderBy(page.keys)).limit(page.limit + 1).offset(page.offset));
+  };
+
+  const countIfAsked = async (options: ListOptions<E> & QueryOptions, where: SQL | undefined) => {
+    if (!options.withTotal) return undefined;
+    // `$count` can't print its SQL, so it is logged as `count`.
+    return logStatement(options.log, name, executorFor(options).$count(table, where), () => 'count');
+  };
+
+  const findMany: CrudRepositoryMethods<E>['findMany'] = (options = {}) =>
+    withErrorMapping(async () => {
+      const where = listWhere(options);
+      const { limit, offset } = pageWindow(options, config.pagination);
       const sort = options.sort ?? defaultSort;
       const keys = sortKeys(visible, sort, config.primaryKey);
-      let afterCursor: SQL | undefined;
-      if (options.cursor !== undefined) afterCursor = keyset.after(keys, keyset.decode(options.cursor, sort, keys));
-
+      const afterCursor = cursorWhere(options.cursor, sort, keys);
       const returned = selection(visible, options.columns);
-      const page = executor
-        .select({ ...returned, ...keyset.fields(keys) })
-        .from(table)
-        .where(and(where, afterCursor))
-        .orderBy(...orderBy(keys))
-        .limit(limit + 1)
-        .offset(offset);
+
       const [rows, total] = await Promise.all([
-        run(options.log, page),
-        // `$count` can't print its SQL, so it is logged as `count`.
-        options.withTotal ? execute(options.log, name, executor.$count(table, where), () => 'count') : undefined,
+        fetchPage(options, { columns: returned, keys, where: and(where, afterCursor), limit, offset }),
+        countIfAsked(options, where),
       ]);
 
       const pageRows = rows.slice(0, limit);
@@ -137,42 +139,54 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
       return { items: typedRows(items), limit, offset, nextCursor, ...(total === undefined ? {} : { total }) };
     });
 
+  const finders: FinderMethods = {};
+  for (const finder of buildFinders(entity)) {
+    // `async` so an invalid value or extra `where` rejects the promise instead of throwing synchronously.
+    if (finder.valueCount === 1) {
+      finders[finder.name] = async (value: unknown, options: ListOptions<E> & QueryOptions = {}) =>
+        findMany({ ...options, where: finder.toWhere([value], options.where) });
+    } else {
+      finders[finder.name] = async (from: unknown, to: unknown, options: ListOptions<E> & QueryOptions = {}) =>
+        findMany({ ...options, where: finder.toWhere([from, to], options.where) });
+    }
+  }
+
   const repository: CrudRepositoryBase<E> = {
     entity,
     db,
     findMany,
-    ...buildFinders<RepositoryFinders<E>, [options?: ListOptions<E> & QueryOptions]>(entity, (where, [options = {}]) =>
-      findMany({ ...options, where: where(options.where) })),
+    ...typedFinders<RepositoryFinders<E>>(finders),
 
     findById: <K extends VisibleKey<E>>(id: PrimaryKeyValue<E>, options: { columns?: readonly K[] } & QueryOptions = {}) =>
-      mapErrors(async () => {
-        const executor = options.tx ?? db;
-        const rows = await run(options.log, executor.select(selection(visible, options.columns)).from(table).where(byId(id, options.scope)).limit(1));
+      withErrorMapping(async () => {
+        const query = executorFor(options).select(selection(visible, options.columns)).from(table).where(byId(id, options.scope)).limit(1);
+        const rows = await runStatement(options.log, query);
         return typedRows<Pick<Row<E>, K>>(rows)[0] ?? null;
       }),
 
     create: (input, options = {}) =>
-      mapErrors(async () => {
+      withErrorMapping(async () => {
         const values: Record<string, unknown> = input;
-        const rows = await run(options.log, (options.tx ?? db).insert(table).values(values).returning(visible));
+        const rows = await runStatement(options.log, executorFor(options).insert(table).values(values).returning(visible));
         return firstOrNotFound(typedRows<Row<E>>(rows), name);
       }),
 
     update: (id, patch, options = {}) =>
-      mapErrors(async () => {
+      withErrorMapping(async () => {
         const values: Record<string, unknown> = patch;
         if (!Object.values(values).some((value) => value !== undefined)) throw new BadRequestError('Nothing to update');
-        const rows = await run(options.log, (options.tx ?? db).update(table).set(values).where(byId(id, options.scope)).returning(visible));
+        const query = executorFor(options).update(table).set(values).where(byId(id, options.scope)).returning(visible);
+        const rows = await runStatement(options.log, query);
         return firstOrNotFound(typedRows<Row<E>>(rows), name);
       }),
 
     delete: (id, options = {}) =>
-      mapErrors(async () => {
-        const executor = options.tx ?? db;
+      withErrorMapping(async () => {
+        const executor = executorFor(options);
         const where = byId(id, options.scope);
         const rows = softDeleteValues
-          ? await run(options.log, executor.update(table).set(softDeleteValues).where(where).returning(visible))
-          : await run(options.log, executor.delete(table).where(where).returning(visible)).catch((error: unknown) => {
+          ? await runStatement(options.log, executor.update(table).set(softDeleteValues).where(where).returning(visible))
+          : await runStatement(options.log, executor.delete(table).where(where).returning(visible)).catch((error: unknown) => {
               throw stillReferenced(error);
             });
         return firstOrNotFound(typedRows<Row<E>>(rows), name);
@@ -180,9 +194,9 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
   };
 
   const scoped = (options: QueryOptions = {}): ScopedQuery => ({
-    db: options.tx ?? db,
+    db: executorFor(options),
     where: (condition) => and(baseWhere(options.scope), condition),
-    run: (query) => mapErrors(() => run(options.log, query)),
+    run: (query) => withErrorMapping(() => runStatement(options.log, query)),
   });
 
   const internals: RepositoryInternals<E> = {
@@ -192,11 +206,13 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
     orderBy: sortBy,
   };
 
-  // `X` collects the types of all methods added so far, so each `extend` keeps the earlier ones.
-  const build = <X extends object>(methods: CrudRepositoryBase<E> & X): CrudRepository<E, X> => ({
-    ...methods,
-    extend: <Y extends object>(factory: (internals: RepositoryInternals<E>) => Y) =>
-      build<X & Y>({ ...methods, ...withMappedErrors(factory(internals)) }),
-  });
+  // `X` collects the types of all methods added so far; see `withExtend`.
+  const build = <X extends object>(methods: CrudRepositoryBase<E> & X): CrudRepository<E, X> => {
+    const current: CrudRepository<E, X> = {
+      ...methods,
+      extend: <Y extends object>(factory: (internals: RepositoryInternals<E>) => Y) => build<X & Y>(withExtend(methods, factory(internals))),
+    };
+    return current;
+  };
   return build(repository);
 }

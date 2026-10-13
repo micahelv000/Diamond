@@ -13,43 +13,58 @@ function finderName(column: string, operator: FilterOperator | 'between'): strin
   return `findBy${column.charAt(0).toUpperCase()}${column.slice(1)}${suffix}`;
 }
 
-/** Combines the finder's own condition with the caller's optional extra `where`. */
-export type FinderWhere = (extra?: Record<string, unknown> | SQL) => SQL | undefined;
+/** One generated finder, before the repository or the service turns it into a method. */
+export interface FinderSpec {
+  /** The method name, such as `findByEmail` or `findByCreatedAtBetween`. */
+  name: string;
+  /** How many values come before the other arguments: two for a Between finder, one otherwise. */
+  valueCount: 1 | 2;
+  /** The finder's condition ANDed with the caller's extra `where`. Throws `BadRequestError` for an `undefined` value. */
+  toWhere(values: readonly unknown[], extra: Record<string, unknown> | SQL | undefined): SQL | undefined;
+}
 
-/**
- * Builds the finder methods declared by an entity's `filterable` config, for both the repository and the service.
- * Each finder passes `run` its remaining arguments and a `where` that ANDs its filter with the caller's own.
- */
-export function buildFinders<Finders, Rest extends unknown[]>(
-  entity: AnyEntity,
-  run: (where: FinderWhere, rest: Rest) => Promise<unknown>,
-): Finders {
+/** The finder methods a layer builds from the specs, before they are typed. */
+export type FinderMethods = Record<string, (...args: never) => Promise<unknown>>;
+
+/** Lists the finders declared by an entity's `filterable` config. */
+export function buildFinders(entity: AnyEntity): FinderSpec[] {
   const { filterable = {}, primaryKey, hidden = [] } = entity.config;
   const columns = visibleColumns(entity.table, hidden);
-  // `async` so an invalid value or extra `where` rejects the promise instead of throwing synchronously.
-  const call = async (name: string, filter: Record<string, unknown>, rest: Rest) => {
-    // `filterToSql` skips undefined values, which would drop the finder's condition and match every row.
-    for (const [key, value] of Object.entries(filter)) {
-      if (value === undefined) throw new BadRequestError(`${name} needs a value for "${key}"`);
-    }
-    return run((extra) => and(filterToSql(columns, filterable, filter), whereToSql(columns, filterable, extra)), rest);
-  };
 
-  const methods: Record<string, (...args: never) => Promise<unknown>> = {};
+  // `filterKeys` holds one filter key per value, in the order the method takes the values.
+  const spec = (name: string, filterKeys: readonly [string] | readonly [string, string]): FinderSpec => ({
+    name,
+    valueCount: filterKeys.length,
+    toWhere: (values, extra) => {
+      const filter: Record<string, unknown> = {};
+      for (const [index, key] of filterKeys.entries()) {
+        const value = values[index];
+        // `filterToSql` skips undefined values, which would drop the finder's condition and match every row.
+        if (value === undefined) throw new BadRequestError(`${name} needs a value for "${key}"`);
+        filter[key] = value;
+      }
+      return and(filterToSql(columns, filterable, filter), whereToSql(columns, filterable, extra));
+    },
+  });
+
+  const specs: FinderSpec[] = [];
   for (const [column, operators = []] of Object.entries(filterable)) {
     for (const operator of operators) {
       // Skipped because it would duplicate the built-in `findById`.
       if (operator === 'eq' && column === primaryKey) continue;
-      const name = finderName(column, operator);
-      methods[name] = (value: unknown, ...rest: Rest) => call(name, { [`${column}__${operator}`]: value }, rest);
+      specs.push(spec(finderName(column, operator), [`${column}__${operator}`]));
     }
     if (operators.includes('gte') && operators.includes('lte')) {
-      const name = finderName(column, 'between');
-      methods[name] = (from: unknown, to: unknown, ...rest: Rest) =>
-        call(name, { [`${column}__gte`]: from, [`${column}__lte`]: to }, rest);
+      specs.push(spec(finderName(column, 'between'), [`${column}__gte`, `${column}__lte`]));
     }
   }
-  // These methods follow the same rules as the `RepositoryFinders` and `ServiceFinders` types, but
-  // TypeScript can't check that for a generic entity, so the type is asserted here.
+  return specs;
+}
+
+/**
+ * Types the finder methods a layer built. They follow the same rules as the `RepositoryFinders` and
+ * `ServiceFinders` types, but TypeScript can't check that for a generic entity, so the type is asserted here.
+ */
+export function typedFinders<Finders>(methods: FinderMethods): Finders {
   return methods as Finders;
 }
