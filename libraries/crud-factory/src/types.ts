@@ -11,6 +11,8 @@ export interface Logger {
   warn(details: object, message?: string): void;
 }
 
+// ── Entity config ──
+
 /** The filter operators a column can allow in `filterable`. */
 export type FilterOperator = 'eq' | 'in' | 'ilike' | 'gte' | 'lte';
 
@@ -91,6 +93,8 @@ export interface Entity<T extends PgTable, C extends EntityConfig<T>> extends An
   readonly schemas: EntitySchemas<Entity<T, C>>;
 }
 
+// ── Rows and inputs ──
+
 /** Flattens a computed object type so hovers show its fields. */
 type Simplify<T> = { [K in keyof T]: T[K] } & {};
 
@@ -106,10 +110,10 @@ export interface AnyEntity {
 
 type TableOf<E extends AnyEntity> = E['table'];
 type Config<E extends AnyEntity> = E['config'];
-// The string union in a config list, or `never` when the option is missing.
-type KeysIn<V> = V extends readonly (infer K extends string)[] ? K : never;
+/** The string union in a config list, or `never` when the option is missing. */
+export type ArrayItem<V> = V extends readonly (infer K extends string)[] ? K : never;
 
-type HiddenKey<E extends AnyEntity> = KeysIn<Config<E>['hidden']>;
+export type HiddenKey<E extends AnyEntity> = ArrayItem<Config<E>['hidden']>;
 type PrimaryKey<E extends AnyEntity> = Config<E>['primaryKey'];
 export type VisibleKey<E extends AnyEntity> = Exclude<ColumnKey<TableOf<E>>, HiddenKey<E>>;
 /** A sort key for code queries: any visible column, with a leading `-` for descending. */
@@ -127,31 +131,39 @@ export type Patch<E extends AnyEntity> = Partial<Omit<Insert<E>, PrimaryKey<E>>>
 type ServerOnlyKey<E extends AnyEntity> = HiddenKey<E> | (Config<E> extends { softDelete: infer K extends string } ? K : never);
 /** The create body clients send: `$inferInsert` without omitted, hidden and soft-delete columns. */
 export type CreateInput<E extends AnyEntity> = Simplify<
-  Omit<Insert<E>, KeysIn<NonNullable<Config<E>['create']>['omit']> | ServerOnlyKey<E>>
+  Omit<Insert<E>, ArrayItem<NonNullable<Config<E>['create']>['omit']> | ServerOnlyKey<E>>
 >;
 /** The update body clients send: a partial `$inferInsert` without omitted, hidden, soft-delete and primary key columns. */
 export type UpdateInput<E extends AnyEntity> = Simplify<
-  Omit<Patch<E>, KeysIn<NonNullable<Config<E>['update']>['omit']> | ServerOnlyKey<E>>
+  Omit<Patch<E>, ArrayItem<NonNullable<Config<E>['update']>['omit']> | ServerOnlyKey<E>>
 >;
+
+// ── Filters ──
 
 type Filterable<E extends AnyEntity> = NonNullable<Config<E>['filterable']>;
 // Uses `Exclude` instead of `NonNullable` so hovers show the resolved type.
 type ColumnValue<E extends AnyEntity, K extends string> = Exclude<InferSelectModel<TableOf<E>>[K & ColumnKey<TableOf<E>>], null>;
 /** Every allowed filter as a `column__operator` key. */
 export type FilterKey<E extends AnyEntity> = {
-  [K in keyof Filterable<E> & string]: `${K}__${KeysIn<Filterable<E>[K]>}`;
+  [K in keyof Filterable<E> & string]: `${K}__${ArrayItem<Filterable<E>[K]>}`;
 }[keyof Filterable<E> & string];
+/** The filter value type for each operator, given the column's value type `V`. */
+interface OperatorValue<V> {
+  eq: V;
+  in: V[];
+  ilike: string;
+  gte: V;
+  lte: V;
+}
 /** The value type for one `column__operator` key. */
-export type FilterValue<E extends AnyEntity, P extends string> = P extends `${infer K}__in`
-  ? ColumnValue<E, K>[]
-  : P extends `${string}__ilike`
-    ? string
-    : P extends `${infer K}__${FilterOperator}`
-      ? ColumnValue<E, K>
-      : never;
+export type FilterValue<E extends AnyEntity, P extends string> = P extends `${infer K}__${infer O extends FilterOperator}`
+  ? OperatorValue<ColumnValue<E, K>>[O]
+  : never;
 
 /** A typed filter object with `column__operator` keys, limited to `filterable`. */
 export type Filter<E extends AnyEntity> = Simplify<{ [P in FilterKey<E>]?: FilterValue<E, P> }>;
+
+// ── Finders ──
 
 /** The finder method-name suffix for each filter operator. */
 export interface FinderSuffix {
@@ -161,17 +173,17 @@ export interface FinderSuffix {
   gte: 'From';
   lte: 'Until';
 }
-/** The finder method name for a `column__operator` key. The primary key has no `eq` finder because `findById` covers it. */
-export type FinderName<E extends AnyEntity, P extends string> = P extends `${infer K}__${infer O extends FilterOperator}`
-  ? O extends 'eq'
-    ? K extends PrimaryKey<E>
-      ? never
-      : `findBy${Capitalize<K>}`
-    : `findBy${Capitalize<K>}${FinderSuffix[O]}`
+// The primary key has no `eq` finder because `findById` covers it.
+type PrimaryKeyEqKey<E extends AnyEntity> = `${PrimaryKey<E>}__eq`;
+/** `findBy<Column><Suffix>` for a `column__operator` key. */
+type FinderMethodName<P extends string> = P extends `${infer K}__${infer O extends FilterOperator}`
+  ? `findBy${Capitalize<K>}${FinderSuffix[O]}`
   : never;
+/** The finder method name for a `column__operator` key: none for the primary key's `eq`, else `findBy<Column><Suffix>`. */
+export type FinderName<E extends AnyEntity, P extends string> = P extends PrimaryKeyEqKey<E> ? never : FinderMethodName<P>;
 /** Columns that allow both `gte` and `lte`, which also get a range finder. */
 export type RangeKey<E extends AnyEntity> = {
-  [K in keyof Filterable<E> & string]: 'gte' | 'lte' extends KeysIn<Filterable<E>[K]> ? K : never;
+  [K in keyof Filterable<E> & string]: 'gte' | 'lte' extends ArrayItem<Filterable<E>[K]> ? K : never;
 }[keyof Filterable<E> & string];
 /** The type of both ends of a range finder. */
 export type RangeValue<E extends AnyEntity, K extends string> = ColumnValue<E, K>;
@@ -215,6 +227,8 @@ type RepositoryRangeFinders<E extends AnyEntity> = {
  * same options; an extra `where` is combined with the finder's own condition using AND.
  */
 export type RepositoryFinders<E extends AnyEntity> = RepositoryValueFinders<E> & RepositoryRangeFinders<E>;
+
+// ── Listing ──
 
 /** Per-call database options that every repository method accepts. */
 export interface QueryOptions {

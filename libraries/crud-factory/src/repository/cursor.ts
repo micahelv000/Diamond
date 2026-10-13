@@ -7,10 +7,11 @@
  *
  * The cursor is sent to clients as base64url-encoded JSON, so it is opaque but not secret.
  */
-import { and, eq, extractExtendedColumnType, gt, isNotNull, isNull, lt, or, sql, type Column, type SQL } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, isNull, lt, or, sql, type Column, type SQL } from 'drizzle-orm';
 import type { PgColumn, PgTable } from 'drizzle-orm/pg-core';
 import { createSchemaFactory } from 'drizzle-orm/zod';
 import { z } from 'zod';
+import { isBigintColumn, isDateObjectColumn } from '../columns.ts';
 import { BadRequestError } from '../errors.ts';
 import { refinements, type Shape } from '../schemas.ts';
 import type { SortKey } from './sort.ts';
@@ -26,15 +27,6 @@ const cursorContentsSchema = z
   .strict();
 type CursorContents = z.infer<typeof cursorContentsSchema>;
 
-function isDateColumn(column: Column): boolean {
-  const { type, constraint } = extractExtendedColumnType(column);
-  return type === 'object' && constraint === 'date';
-}
-
-function isBigintColumn(column: Column): boolean {
-  return extractExtendedColumnType(column).type === 'bigint';
-}
-
 // Dates are stored in the cursor as the database's own text, not as a JavaScript Date: a Date keeps
 // only milliseconds while Postgres keeps microseconds, so rounding could repeat or skip rows.
 const dateAsText = z.union([z.iso.datetime({ offset: true, local: true }), z.iso.date()]);
@@ -47,7 +39,7 @@ const bigintAsText = z.codec(z.string().regex(z.regexes.integer), z.int64(), {
 
 /** The schema for a column's value inside a cursor, when it differs from the column's normal schema. */
 function cursorValueSchema(column: Column): z.ZodType | undefined {
-  if (isDateColumn(column)) return dateAsText;
+  if (isDateObjectColumn(column)) return dateAsText;
   if (isBigintColumn(column)) return bigintAsText;
   return undefined;
 }
@@ -155,7 +147,7 @@ export function createKeyset(table: PgTable): Keyset {
     fields(keys) {
       const fields: Record<string, PgColumn | SQL> = {};
       for (const [index, { column }] of keys.entries()) {
-        if (isDateColumn(column)) {
+        if (isDateObjectColumn(column)) {
           // `to_json` gives the date as ISO 8601 text with full precision.
           fields[cursorFieldName(index)] = sql`to_json(${column}) #>> '{}'`;
         } else {

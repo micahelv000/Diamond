@@ -1,7 +1,8 @@
-import { extractExtendedColumnType, getColumns, type Column } from 'drizzle-orm';
+import { getColumns, type Column } from 'drizzle-orm';
 import type { PgTable } from 'drizzle-orm/pg-core';
 import { bigintStringModeSchema, createSchemaFactory } from 'drizzle-orm/zod';
 import { z } from 'zod';
+import { isBigintColumn, isBooleanColumn, isDateObjectColumn, isDateOnlyColumn, isFloatColumn, isStringDateColumn, isTimestampColumn } from './columns.ts';
 import type { AnyEntity, EntityConfig, EntitySchemas, FilterOperator } from './types.ts';
 
 const bodyFactory = createSchemaFactory();
@@ -21,22 +22,27 @@ const writeSchemas = {
 const readInt64 = z.codec(z.string(), z.bigint(), { decode: BigInt, encode: String });
 
 function writeSchema(column: Column): z.ZodType | undefined {
-  const { type, constraint } = extractExtendedColumnType(column);
-  if (constraint === 'date') return type === 'string' ? writeSchemas.dayString : column.getSQLType() === 'date' ? writeSchemas.day : writeSchemas.timestamp;
-  if (constraint === 'int64' && type === 'bigint') return writeSchemas.int64;
-  if (constraint === 'float' || constraint === 'double') return writeSchemas.float;
+  if (isStringDateColumn(column)) return writeSchemas.dayString;
+  if (isDateOnlyColumn(column)) return writeSchemas.day;
+  if (isTimestampColumn(column)) return writeSchemas.timestamp;
+  if (isBigintColumn(column)) return writeSchemas.int64;
+  if (isFloatColumn(column)) return writeSchemas.float;
   return undefined;
 }
 
 // Query values are strings, so booleans need `stringbool` (coercion reads "false" as true) and dates use the body formats.
 function queryValueSchema(column: Column): z.ZodType | undefined {
-  const { type, constraint } = extractExtendedColumnType(column);
-  if (type === 'boolean') return z.stringbool();
-  return constraint === 'date' ? writeSchema(column) : undefined;
+  if (isBooleanColumn(column)) return z.stringbool();
+  if (isDateObjectColumn(column) || isStringDateColumn(column)) return writeSchema(column);
+  return undefined;
 }
 
+// drizzle's refinement parameter is typed from the table's keys, which a generic table doesn't have;
+// an empty object type is assignable to it.
+type DrizzleRefinements = Record<never, never>;
+
 // Refinement functions keep drizzle's nullable and optional wrapping. The keys are only known at runtime.
-export function refinements(table: PgTable, pick: (column: Column) => z.ZodType | undefined): Record<never, never> {
+export function refinements(table: PgTable, pick: (column: Column) => z.ZodType | undefined): DrizzleRefinements {
   return Object.fromEntries(
     Object.entries(getColumns(table)).flatMap(([key, column]) => {
       const schema = pick(column);
@@ -127,7 +133,7 @@ export function buildSchemas<E extends AnyEntity>(
   // Clients can't write hidden or soft-delete columns; service hooks still can.
   const serverOnly = config.softDelete ? [...hidden, config.softDelete] : hidden;
   const writes = refinements(table, writeSchema);
-  const reads = refinements(table, (column) => (writeSchema(column) === writeSchemas.int64 ? readInt64 : undefined));
+  const reads = refinements(table, (column) => (isBigintColumn(column) ? readInt64 : undefined));
   const read = objectWithout(bodyFactory.createSelectSchema(table, reads).shape, hidden);
   const create = objectWithout(bodyFactory.createInsertSchema(table, writes).shape, [...(config.create?.omit ?? []), ...serverOnly]);
   const update = objectWithout(bodyFactory.createUpdateSchema(table, writes).shape, [
