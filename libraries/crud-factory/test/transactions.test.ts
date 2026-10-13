@@ -1,7 +1,7 @@
 import { count, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { crudRoutes, type CrudRoutesOptions } from '../src/fastify/index.ts';
-import { ConflictError, createRepository, createService, requireRole, type ServiceContext } from '../src/index.ts';
+import { ConflictError, createRepository, createService, requireRole, type QueryOptions, type ServiceContext } from '../src/index.ts';
 import { postEntity, userEntity } from './fixtures/entities.ts';
 import { posts, users } from './fixtures/schema.ts';
 import { useTestDb } from './helpers/db.ts';
@@ -25,6 +25,13 @@ const userService = createService<typeof userEntity, TestUser>(userRepo, {
 // A custom method: a plain function over `base.update`, so it joins whatever transaction `ctx` carries.
 const extendedUserService = userService.extend((base) => ({
   rename: (id: number, name: string, ctx: ServiceContext<TestUser>) => base.update(id, { name }, ctx),
+}));
+// A custom query that writes through `scoped(options).db`, so it joins whatever transaction the options carry.
+const customUserRepo = userRepo.extend(({ scoped, table }) => ({
+  insertDirectly: async (email: string, options: QueryOptions) => {
+    const query = scoped(options);
+    await query.run(query.db.insert(table).values({ ...newUser(email), passwordHash: 'h' }));
+  },
 }));
 const postService = createService<typeof postEntity, TestUser>(createRepository(db, postEntity), {
   hooks: { beforeCreate: ({ input }) => ({ ...input, orgId: 10 }) },
@@ -70,6 +77,11 @@ function userRoutes(transaction: boolean | undefined) {
         await service.rename(request.params.id, 'Renamed', serviceContext(request));
         throw new ConflictError('Failed after the rename');
       });
+      // Writes through a custom repository query, then fails: the write must be rolled back.
+      scope.post('/custom-query', { config: { crudOperation: 'create' } }, async (request) => {
+        await customUserRepo.insertDirectly('custom@x.io', serviceContext(request));
+        throw new ConflictError('Failed after the custom query');
+      });
       // Sends the reply itself: rejected inside the transaction, allowed without one.
       scope.post('/sent', { config: { crudOperation: 'create' } }, async (request, reply) => {
         const row = await service.create(newUser('sent@x.io'), serviceContext(request));
@@ -107,6 +119,13 @@ describe('transaction: true (default)', () => {
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ code: 'CONFLICT', message: 'Failed after the rename' });
     expect((await db.select({ name: users.name }).from(users))[0]?.name).toBe('Ann');
+  });
+
+  test('a custom query written with scoped(ctx) rolls back with the request transaction', async () => {
+    const response = await app().inject({ method: 'POST', url: '/users/custom-query', headers: as(admin) });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ code: 'CONFLICT', message: 'Failed after the custom query' });
+    expect(await countUsers()).toBe(0);
   });
 
   test('a service hook that writes and then throws rolls its write back', async () => {
@@ -179,6 +198,12 @@ describe('transaction: false', () => {
     const response = await app().inject({ method: 'POST', url: `/users/${user?.id}/rename`, headers: as(admin) });
     expect(response.statusCode).toBe(409);
     expect((await db.select({ name: users.name }).from(users))[0]?.name).toBe('Renamed');
+  });
+
+  test('a custom query\'s write survives the failure after it', async () => {
+    const response = await app().inject({ method: 'POST', url: '/users/custom-query', headers: as(admin) });
+    expect(response.statusCode).toBe(409);
+    expect(await countUsers()).toBe(1);
   });
 
   test('a handler may send the reply itself, and its write commits', async () => {

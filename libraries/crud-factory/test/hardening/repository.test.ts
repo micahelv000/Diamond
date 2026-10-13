@@ -1,11 +1,11 @@
 // Edge cases for the repository against a real Postgres (PGlite): finders, sorting, paging, scope,
 // soft delete, hidden columns, `extend` and the SQLSTATE mapping.
 import { PGlite } from '@electric-sql/pglite';
-import { asc, eq, sql, type SQL } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { customType, integer, pgEnum, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core';
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'vitest';
-import { BadRequestError, ConflictError, createRepository, defineEntity, NotFoundError, CrudFactoryError } from '../../src/index.ts';
+import { BadRequestError, ConflictError, createRepository, defineEntity, NotFoundError, CrudFactoryError, type QueryOptions } from '../../src/index.ts';
 
 const status = pgEnum('r_status', ['draft', 'live']);
 const vendors = pgTable('r_vendors', { id: integer().primaryKey().generatedAlwaysAsIdentity(), name: text().notNull() });
@@ -69,10 +69,16 @@ const repo = createRepository(db, itemEntity);
 const capped = createRepository(db, cappedEntity);
 const vendorRepo = createRepository(db, defineEntity(vendors, { primaryKey: 'id' }));
 const eventRepo = createRepository(db, defineEntity(events, { primaryKey: 'id' }));
-// A custom query built the documented way: visible columns, baseWhere, the caller's tx.
-const extended = repo.extend(({ table, baseWhere, project, run }) => ({
-  listRaw: (options: { scope?: SQL } = {}) => run(db.select(project()).from(table).where(baseWhere(options.scope)).orderBy(asc(table.id))),
-  setNegativeQty: (id: number) => run(db.update(table).set({ qty: -1 }).where(eq(table.id, id))),
+// A custom query built the documented way: visible columns, through `scoped(options)`.
+const extended = repo.extend(({ scoped, table, project }) => ({
+  listRaw: (options: QueryOptions = {}) => {
+    const query = scoped(options);
+    return query.run(query.db.select(project()).from(table).where(query.where()).orderBy(asc(table.id)));
+  },
+  setNegativeQty: (id: number) => {
+    const query = scoped();
+    return query.run(query.db.update(table).set({ qty: -1 }).where(query.where(eq(table.id, id))));
+  },
   failWithNotFound: async () => {
     throw new NotFoundError('custom');
   },
@@ -206,7 +212,7 @@ describe('scope applies to every method', () => {
       expect(await rejection(repo.delete(1, { scope: tenant2 }))).toBeInstanceOf(NotFoundError);
       expect(await repo.findById(1)).not.toBeNull();
     }],
-    ['an extend query using baseWhere', async () => expect(ids(await extended.listRaw({ scope: tenant2 }))).toEqual([4, 5])],
+    ['an extend query using scoped().where', async () => expect(ids(await extended.listRaw({ scope: tenant2 }))).toEqual([4, 5])],
   ])('%s', async (_label, check) => {
     await check();
   });
@@ -223,7 +229,7 @@ describe('soft delete applies to every path', () => {
     ['a finder skips the row', async () => expect(ids((await repo.findByNameContaining('Deleted')).items)).toEqual([])],
     ['update is a NotFoundError', async () => expect(await rejection(repo.update(6, { name: 'back' }))).toBeInstanceOf(NotFoundError)],
     ['deleting again is a NotFoundError', async () => expect(await rejection(repo.delete(6))).toBeInstanceOf(NotFoundError)],
-    ['an extend query using baseWhere skips the row', async () => expect(ids(await extended.listRaw())).not.toContain(6)],
+    ['an extend query using scoped().where skips the row', async () => expect(ids(await extended.listRaw())).not.toContain(6)],
     ['the unique constraint still sees the kept row', async () => {
       expect(await rejection(repo.create({ sku: 'A6', name: 'again' }))).toBeInstanceOf(ConflictError);
     }],

@@ -264,39 +264,53 @@ stored on `request.crudContext` (`{ auth, scope }`).
 
 | Layer | How | Use it for |
 |---|---|---|
-| Repository | `createRepository(db, entity).extend(({ db, table, baseWhere, project, run, orderBy }) => ({ … }))` | joins, window functions, reports. Base methods, finders included, can't be overridden (compile error). |
+| Repository | `createRepository(db, entity).extend(({ scoped, table, project, orderBy }) => ({ … }))` | joins, window functions, reports. Base methods, finders included, can't be overridden (compile error). |
 | Service | `createService(repo, { hooks: { beforeCreate, afterCreate, … } })` | stamping `createdBy`/`orgId` from `ctx.auth`, hashing, normalising input, blocking a delete, follow-up writes. See [Service hooks](#service-hooks). |
 | Service | `createService(repo).extend((base) => ({ … }))` | business operations built from the CRUD methods (`delayFlight`, a two-leg booking). Built-in names can't be reused (compile error). |
 | Routes | `crudRoutes({ …, extend: (scope, { service, entity, serviceContext }) => { … } })` | custom endpoints that share the validation, error handler and authorization. |
 
-A custom query must call `baseWhere(scope)`, which adds the soft-delete filter and the caller's
-permission scope. `internals.db` is the root database, so take a `tx` and use `(tx ?? db)`, or the
-query runs outside the request's [transaction](#transactions). Run the
-query with `run(query, log)` so it logs like the built-in methods, and order a list with
-`orderBy(sort)`: the caller's sort, else `defaultSort`, ending with the primary key, like `findMany`:
+A custom query takes the caller's `QueryOptions` and reaches the database only through
+`scoped(options)`, which returns:
+
+- `db`: the database to build the query on. It is the caller's `tx` when given, so the query joins
+  the request's [transaction](#transactions).
+- `where(condition?)`: the full WHERE: soft delete and the caller's permission scope, ANDed with your
+  condition.
+- `run(query)`: runs the query, logging it through the caller's `log` and mapping database errors,
+  like the built-in methods.
+
+Order a list with `orderBy(sort)`: the caller's sort, else `defaultSort`, ending with the primary key,
+like `findMany`:
 
 ```ts
-const userRepo = createRepository(db, userEntity).extend(({ db, table, baseWhere, project, run, orderBy }) => ({
-  withPostCounts: ({ scope, tx, log }: QueryOptions = {}) =>
-    run(
-      (tx ?? db)
+const userRepo = createRepository(db, userEntity).extend(({ scoped, table, project, orderBy }) => ({
+  withPostCounts: (options: QueryOptions = {}) => {
+    const query = scoped(options);
+    return query.run(
+      query.db
         .select({ ...project(['id', 'name']), postCount: count(posts.id) })
         .from(table)
         .leftJoin(posts, eq(posts.authorId, table.id))
-        .where(baseWhere(scope))
+        .where(query.where())
         .groupBy(table.id),
-      log,
-    ),
-  findActive: async ({ sort, scope, tx, log }: QueryOptions & { sort?: readonly SortSpec<typeof userEntity>[] } = {}) =>
-    run((tx ?? db).select(project()).from(table).where(and(baseWhere(scope), eq(table.status, 'active'))).orderBy(...orderBy(sort)), log),
+    );
+  },
+  findActive: async ({ sort, ...options }: QueryOptions & { sort?: readonly SortSpec<typeof userEntity>[] } = {}) => {
+    const query = scoped(options);
+    return query.run(query.db.select(project()).from(table).where(query.where(eq(table.status, 'active'))).orderBy(...orderBy(sort)));
+  },
 }));
 ```
 
+A query that must deliberately see past the caller's scope, like a check for clashes with rows the
+caller can't see, passes `scoped({ ...options, scope: undefined })`. Soft delete still applies. Code
+outside `extend` can still use the public `repository.db`.
+
 - **Error mapping is automatic.** When a method you add returns a promise (any `async` method, or one
-  that returns `run(…)`) and it rejects, the error goes through the same mapping as the base methods.
+  that returns `query.run(…)`) and it rejects, the error goes through the same mapping as the base methods.
   A unique violation becomes a `ConflictError` (409), a missing foreign key a `BadRequestError` (400),
   not a 500. A method that returns a query builder without running it is passed through unchanged.
-- **Logging is opt-in.** Only the caller knows the logger, so pass it on: `run(query, log)` logs the
+- **Logging is opt-in.** Only the caller knows the logger, so pass its options on: `scoped(options).run(query)` logs the
   statement text (values stay `$1`, `$2` … parameters) and its duration at debug as `sql`. In a route,
   `serviceContext(request)` carries `request.log`, so passing it as the method's options is enough.
 
@@ -393,8 +407,8 @@ custom route with several writes all-or-nothing.
 
 `serviceContext(request)` carries the transaction (`ctx.tx`), so pass it to every call in the route:
 other entities' services, `service.repository` methods, and your own helpers. Service hooks get the
-same `ctx`, so a write in `beforeCreate` joins it too, and a throwing `afterCreate` rolls back the insert. Custom repository methods must run on
-`(tx ?? db)` (see [Extension points](#extension-points)).
+same `ctx`, so a write in `beforeCreate` joins it too, and a throwing `afterCreate` rolls back the insert. Custom repository methods join it too when
+they take the `ctx` and build on `scoped(ctx)` (see [Extension points](#extension-points)).
 
 ```ts
 scope.post('/rotation', { config: { crudOperation: 'create' }, schema: { body } }, async (request, reply) => {
@@ -470,7 +484,7 @@ level, between Fastify's own `incoming request` / `request completed` info lines
 |---|---|---|
 | Routes | `request body` | the validated body (unknown and omitted fields already removed); turn off with `logRequestBody: false` |
 | Authorization | `authorization` | `op`, `decision`, `anonymous` (never the user object) |
-| Repository | `sql` | `entity`, the statement text (values are `$1`, `$2` … parameters, never inlined), `durationMs`. Custom `extend` queries log it when run through `run(query, log)`. |
+| Repository | `sql` | `entity`, the statement text (values are `$1`, `$2` … parameters, never inlined), `durationMs`. Custom `extend` queries log it when run through `scoped(options).run(query)`. |
 | Service | `repository call` | `entity`, `op`, `id`, `durationMs` |
 
 Library errors are logged with their `code`: client errors (4xx) at debug, others at warn. Unexpected

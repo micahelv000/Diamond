@@ -151,9 +151,11 @@ describe('findMany', () => {
   });
 
   test('internals.orderBy gives a custom query the caller\'s sort, else defaultSort, with the primary key last', async () => {
-    const repository = createRepository(db, userEntity).extend(({ db: database, table, project, baseWhere, run, orderBy }) => ({
-      listNames: async ({ sort, log }: QueryOptions & { sort?: readonly SortSpec<typeof userEntity>[] } = {}) =>
-        run(database.select(project(['name'])).from(table).where(baseWhere()).orderBy(...orderBy(sort)), log),
+    const repository = createRepository(db, userEntity).extend(({ scoped, table, project, orderBy }) => ({
+      listNames: async ({ sort, ...options }: QueryOptions & { sort?: readonly SortSpec<typeof userEntity>[] } = {}) => {
+        const query = scoped(options);
+        return query.run(query.db.select(project(['name'])).from(table).where(query.where()).orderBy(...orderBy(sort)));
+      },
       clauses: orderBy,
     }));
     // No sort: defaultSort ('-createdAt').
@@ -306,43 +308,49 @@ describe('transactions', () => {
 });
 
 describe('extend', () => {
-  test('adds a join query that respects soft delete and scope', async () => {
-    const repository = createRepository(db, userEntity).extend(({ db: database, table, baseWhere, project }) => ({
-      async findWithPostCounts(scope?: Parameters<typeof baseWhere>[0]) {
-        return database
+  test('a join query through scoped(options) hides soft-deleted rows and rows outside the scope', async () => {
+    const repository = createRepository(db, userEntity).extend(({ scoped, table, project }) => ({
+      findWithPostCounts: (options: QueryOptions = {}) => {
+        const query = scoped(options);
+        return query.run(query.db
           .select({ ...project(['id', 'name']), postCount: sql<number>`count(${posts.id})`.mapWith(Number) })
           .from(table)
           .leftJoin(posts, eq(posts.authorId, table.id))
-          .where(baseWhere(scope))
+          .where(query.where())
           .groupBy(table.id)
-          .orderBy(table.id);
+          .orderBy(table.id));
       },
     }));
     const author = await repository.create(newUser({ name: 'Author' }));
     const reader = await repository.create(newUser({ name: 'Reader' }));
     const deleted = await repository.create(newUser({ name: 'Gone' }));
+    const otherTenant = await repository.create(newUser({ name: 'Other org', orgId: 2 }));
     await postRepository.create({ authorId: author.id, orgId: 1, title: 'One' });
     await postRepository.create({ authorId: author.id, orgId: 1, title: 'Two' });
     await repository.delete(deleted.id);
 
-    expect(await repository.findWithPostCounts()).toEqual([
+    const authorAndReader = [
       { id: author.id, name: 'Author', postCount: 2 },
       { id: reader.id, name: 'Reader', postCount: 0 },
-    ]);
-    expect(await repository.findMany({ columns: ['name'], sort: ['name'] })).toMatchObject({ items: [{ name: 'Author' }, { name: 'Reader' }] });
+    ];
+    expect(await repository.findWithPostCounts()).toEqual([...authorAndReader, { id: otherTenant.id, name: 'Other org', postCount: 0 }]);
+    expect(await repository.findWithPostCounts({ scope: eq(users.orgId, 1) })).toEqual(authorAndReader);
+    // The built-in findMany sees the same rows under the same scope.
+    const scoped = await repository.findMany({ columns: ['name'], sort: ['name'], scope: eq(users.orgId, 1) });
+    expect(scoped.items).toEqual([{ name: 'Author' }, { name: 'Reader' }]);
   });
 });
 
 describe('extend safety nets', () => {
   // Plain `async` methods with no `run`: only the automatic wrapping can map their errors.
-  const rawPosts = createRepository(db, postEntity).extend(({ db: database, table }) => ({
+  const rawPosts = createRepository(db, postEntity).extend(({ scoped, table }) => ({
     insertRaw: async (authorId: number) => {
-      await database.insert(table).values({ authorId, orgId: 1, title: 'Raw' });
+      await scoped().db.insert(table).values({ authorId, orgId: 1, title: 'Raw' });
     },
   }));
-  const rawUsers = createRepository(db, userEntity).extend(({ db: database, table }) => ({
+  const rawUsers = createRepository(db, userEntity).extend(({ scoped, table }) => ({
     insertRaw: async (email: string) => {
-      await database.insert(table).values(newUser({ email }));
+      await scoped().db.insert(table).values(newUser({ email }));
     },
   }));
 
@@ -357,7 +365,7 @@ describe('extend safety nets', () => {
     expect(error).toMatchObject({ statusCode: 409, constraint: 'users_email_unique' });
   });
 
-  test('internals.run logs one sql debug line with the statement text and no values, and maps errors', async () => {
+  test('scoped(options).run logs one sql debug line through options.log, with no values, and maps errors', async () => {
     const entries: { level: string; details: object; message: string | undefined }[] = [];
     const log: Logger = {
       debug: (details, message) => entries.push({ level: 'debug', details, message }),
@@ -365,10 +373,11 @@ describe('extend safety nets', () => {
     };
     // Called directly, not from an extend method, so the automatic wrapping can't do `run`'s job for it.
     const repository = createRepository(db, userEntity).extend((internals) => ({ internals: () => internals }));
-    const { db: database, table, run } = repository.internals();
+    const { scoped, table } = repository.internals();
+    const query = scoped({ log });
     const created = await repository.create(newUser({ email: 'secret@example.com' }));
 
-    const ids = await run(database.select({ id: table.id }).from(table).where(eq(table.email, 'secret@example.com')), log);
+    const ids = await query.run(query.db.select({ id: table.id }).from(table).where(query.where(eq(table.email, 'secret@example.com'))));
     expect(ids).toEqual([{ id: created.id }]);
     expect(entries).toEqual([
       { level: 'debug', message: 'sql', details: { entity: 'users', sql: expect.stringContaining('from "users"'), durationMs: expect.any(Number) } },
@@ -376,7 +385,8 @@ describe('extend safety nets', () => {
     expect(JSON.stringify(entries)).toContain('$1');
     expect(JSON.stringify(entries)).not.toContain('secret@example.com');
 
-    await expect(run(database.insert(table).values(newUser({ email: 'secret@example.com' })))).rejects.toBeInstanceOf(ConflictError);
+    const duplicate = query.run(query.db.insert(table).values(newUser({ email: 'secret@example.com' })));
+    await expect(duplicate).rejects.toBeInstanceOf(ConflictError);
   });
 });
 

@@ -88,47 +88,54 @@ type Flight = Row<typeof flightEntity>;
 type FlightSort = readonly SortSpec<typeof flightEntity>[];
 
 // 3. Custom queries
-// `baseWhere(scope)` applies soft delete and the caller's scope, like the built-in methods.
-// `run` logs the SQL and maps database errors. `orderBy(sort)` uses the given sort or `defaultSort`.
+// `scoped(options)` gives the database for this call: `db` joins the caller's transaction, `where`
+// adds soft delete and the caller's scope, and `run` logs the SQL and maps database errors.
+// `orderBy(sort)` uses the given sort or `defaultSort`.
 const origin = alias(airports, 'origin');
 const destination = alias(airports, 'destination');
-const flightRepo = createRepository(db, flightEntity).extend(({ table, baseWhere, project, run, orderBy }) => ({
-  findDetails: async (id: number, { scope, tx, log }: QueryOptions = {}) => {
-    const [row] = await run((tx ?? db)
+const flightRepo = createRepository(db, flightEntity).extend(({ scoped, table, project, orderBy }) => ({
+  findDetails: async (id: number, options: QueryOptions = {}) => {
+    const query = scoped(options);
+    const [row] = await query.run(query.db
       .select({ ...project(), originName: origin.name, destinationName: destination.name, aircraftModel: aircraft.model })
       .from(table)
       .innerJoin(origin, eq(origin.code, table.originCode))
       .innerJoin(destination, eq(destination.code, table.destinationCode))
       .innerJoin(aircraft, eq(aircraft.id, table.aircraftId))
-      .where(and(baseWhere(scope), eq(table.id, id))), log);
+      .where(query.where(eq(table.id, id))));
     return row ?? null;
   },
-  findDelayed: async (minMinutes: number, { sort, scope, tx, log }: QueryOptions & { sort?: FlightSort } = {}) =>
-    run((tx ?? db)
+  findDelayed: async (minMinutes: number, { sort, ...options }: QueryOptions & { sort?: FlightSort } = {}) => {
+    const query = scoped(options);
+    return query.run(query.db
       .select({ ...project(), delayMinutes: sql<number>`extract(epoch from ${table.actualDeparture} - ${table.scheduledDeparture}) / 60`.mapWith(Number) })
       .from(table)
-      .where(and(baseWhere(scope), sql`${table.actualDeparture} - ${table.scheduledDeparture} > make_interval(mins => ${minMinutes})`))
-      .orderBy(...orderBy(sort)), log),
-  statsByOrigin: (from: Date, to: Date, { scope, tx, log }: QueryOptions = {}) =>
-    run((tx ?? db)
+      .where(query.where(sql`${table.actualDeparture} - ${table.scheduledDeparture} > make_interval(mins => ${minMinutes})`))
+      .orderBy(...orderBy(sort)));
+  },
+  statsByOrigin: (from: Date, to: Date, options: QueryOptions = {}) => {
+    const query = scoped(options);
+    return query.run(query.db
       .select({ originCode: table.originCode, originName: airports.name, flights: count() })
       .from(table)
       .innerJoin(airports, eq(airports.code, table.originCode))
-      .where(and(baseWhere(scope), gte(table.scheduledDeparture, from), lt(table.scheduledDeparture, to)))
+      .where(query.where(and(gte(table.scheduledDeparture, from), lt(table.scheduledDeparture, to))))
       .groupBy(table.originCode, airports.name)
-      .orderBy(table.originCode), log),
+      .orderBy(table.originCode));
+  },
   // Finds another live flight on the same aircraft whose times overlap.
-  // Deliberately unscoped: a clash with a flight the caller can't see is still a clash.
-  findOverlapping: async (aircraftId: number, departure: Date, arrival: Date, excludeId?: number, { tx, log }: QueryOptions = {}) => {
-    const [row] = await run((tx ?? db)
+  findOverlapping: async (aircraftId: number, departure: Date, arrival: Date, excludeId?: number, options: QueryOptions = {}) => {
+    // Drops the caller's scope on purpose: a clash with a flight the caller can't see is still a clash.
+    const query = scoped({ ...options, scope: undefined });
+    const [row] = await query.run(query.db
       .select(project(['id', 'flightNumber']))
       .from(table)
-      .where(and(
-        baseWhere(), eq(table.aircraftId, aircraftId), ne(table.status, 'cancelled'),
+      .where(query.where(and(
+        eq(table.aircraftId, aircraftId), ne(table.status, 'cancelled'),
         lt(table.scheduledDeparture, arrival), gt(table.scheduledArrival, departure),
         excludeId === undefined ? undefined : ne(table.id, excludeId),
-      ))
-      .limit(1), log);
+      )))
+      .limit(1));
     return row ?? null;
   },
 }));

@@ -41,8 +41,11 @@ describe('crudRoutes types', () => {
   });
 
   test('extend sees service.repository with its custom methods, and TCtx is still inferred', () => {
-    const extendedRepo = repository.extend(({ db, table, run }) => ({
-      idsByName: (name: string, { log }: QueryOptions = {}) => run(db.select({ id: table.id }).from(table).where(eq(table.name, name)), log),
+    const extendedRepo = repository.extend(({ scoped, table }) => ({
+      idsByName: (name: string, options: QueryOptions = {}) => {
+        const query = scoped(options);
+        return query.run(query.db.select({ id: table.id }).from(table).where(query.where(eq(table.name, name))));
+      },
     }));
     crudRoutes({
       service: createService(extendedRepo),

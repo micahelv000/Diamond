@@ -6,7 +6,6 @@ import type {
   FindByIdOptions,
   ListOptions,
   ListResult,
-  Logger,
   NoOverride,
   Patch,
   PrimaryKeyValue,
@@ -20,32 +19,39 @@ import type {
 /** The tools `.extend()` provides for writing custom queries. */
 export interface RepositoryInternals<E extends AnyEntity> {
   /**
-   * The database the repository was created with. Run custom queries on the caller's `tx` when one is
-   * given, so they join its transaction; a query on `db` alone runs outside it and survives a rollback.
+   * The way to reach the database from a custom query. Pass the caller's options, and the returned
+   * `db`, `where` and `run` apply its transaction, scope and logger, plus soft delete, the same way
+   * the built-in methods do.
    */
-  db: Database;
+  scoped(options?: QueryOptions): ScopedQuery;
   /** The entity's drizzle table, for building queries and referencing its columns. */
   table: E['table'];
-  /**
-   * The conditions every built-in query applies: rows that are not soft-deleted and match the caller's `scope`.
-   * Add it to a custom query's `where`, or it will also return deleted rows and rows outside the scope.
-   */
-  baseWhere(scope?: SQL): SQL | undefined;
   /**
    * The table's visible columns, ready to spread into a `select`.
    * Pass column names to pick only some of them.
    */
   project<K extends VisibleKey<E> = VisibleKey<E>>(keys?: readonly K[]): Pick<E['table']['_']['columns'], K>;
   /**
-   * Runs a query and returns its result, mapping database errors like the built-in methods do.
-   * When `log` is given, it logs the SQL text (never the values) and duration at `debug`.
-   */
-  run<R>(query: RunnableQuery<R>, log?: Logger): Promise<R>;
-  /**
    * The ORDER BY clauses for `sort`, or for the entity's `defaultSort` when omitted, always ending with
    * the primary key. Only visible columns can be sorted on; any other key throws `BadRequestError`.
    */
   orderBy(sort?: readonly SortSpec<E>[]): SQL[];
+}
+
+/** The database tools for one call, from `scoped(options)`. */
+export interface ScopedQuery {
+  /** The database to build the query on: the caller's `tx` when given, so the query joins its transaction. */
+  db: Database;
+  /**
+   * The full WHERE condition: rows that are not soft-deleted and match the caller's `scope`, ANDed
+   * with `condition` when given.
+   */
+  where(condition?: SQL): SQL | undefined;
+  /**
+   * Runs a query and returns its result, mapping database errors like the built-in methods do.
+   * When the caller gave a `log`, it logs the SQL text (never the values) and duration at `debug`.
+   */
+  run<R>(query: RunnableQuery<R>): Promise<R>;
 }
 
 /** A drizzle query builder that can be awaited and can print its SQL. */

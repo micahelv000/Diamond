@@ -73,8 +73,11 @@ describe('createService', () => {
   });
 
   test('exposes the repository, with its extend methods, as service.repository', async () => {
-    const repository = createRepository(db, userEntity).extend(({ db: database, table, run }) => ({
-      emails: () => run(database.select({ email: table.email }).from(table)),
+    const repository = createRepository(db, userEntity).extend(({ scoped, table }) => ({
+      emails: () => {
+        const query = scoped();
+        return query.run(query.db.select({ email: table.email }).from(table));
+      },
     }));
     const extended = createService(repository);
     expect(extended.repository).toBe(repository);

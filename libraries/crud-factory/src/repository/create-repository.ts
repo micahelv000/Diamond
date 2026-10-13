@@ -8,7 +8,7 @@ import { buildFinders } from './finders.ts';
 import { pickFields, selection, typedColumns, typedRows, visibleColumns, type ColumnMap } from './projection.ts';
 import { createKeyset } from './cursor.ts';
 import { orderBy, sortKeys } from './sort.ts';
-import type { CrudRepository, CrudRepositoryBase, CrudRepositoryMethods, RepositoryInternals, RunnableQuery } from './types.ts';
+import type { CrudRepository, CrudRepositoryBase, CrudRepositoryMethods, RepositoryInternals, RunnableQuery, ScopedQuery } from './types.ts';
 import { whereToSql } from './utils.ts';
 
 async function mapErrors<R>(query: () => Promise<R>): Promise<R> {
@@ -179,12 +179,16 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
       }),
   };
 
+  const scoped = (options: QueryOptions = {}): ScopedQuery => ({
+    db: options.tx ?? db,
+    where: (condition) => and(baseWhere(options.scope), condition),
+    run: (query) => mapErrors(() => run(options.log, query)),
+  });
+
   const internals: RepositoryInternals<E> = {
-    db,
+    scoped,
     table: entity.table,
-    baseWhere,
     project: (keys) => typedColumns(selection(visible, keys)),
-    run: (query, log) => mapErrors(() => run(log, query)),
     orderBy: sortBy,
   };
 
