@@ -6,6 +6,9 @@ The core of this service is a dynamic Repository Factory. When instructed to sca
 4. **Dynamic SQL Operators:** Ensure the generic `findMany` and `update` methods support dynamic `where` clauses using Drizzle's `SQL` chunks and operators (`eq`, `inArray`, `ilike`).
    - Request/response validation is Zod (schemas derived from the table via `drizzle-orm/zod`), not TypeBox.
 
+# Code Style
+Readability beats brevity. The shortest code is not always the best: if a few more lines make the code easier to read, or turn a clever construct into simple, explicit steps that are harder to get wrong, write the few more lines. Prefer clear names and plain control flow over terse tricks.
+
 # Delegation Workflow
 Follow this exact sequential pipeline for all new feature requests:
 1. **Plan:** Outline the required Drizzle schema, the factory instantiation logic, and the Fastify routing layer.
