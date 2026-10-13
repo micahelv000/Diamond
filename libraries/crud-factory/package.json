@@ -13,7 +13,8 @@
     "users": "nodemon --exec tsx examples/users.ts",
     "flights": "nodemon --exec tsx examples/flights.ts",
     "lint": "oxlint",
-    "knip": "knip"
+    "knip": "knip",
+    "listing": "nodemon --exec tsx examples/listing.ts"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
