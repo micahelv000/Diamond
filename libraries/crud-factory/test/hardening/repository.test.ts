@@ -162,7 +162,7 @@ describe('sort', () => {
 
 describe('limit and offset', () => {
   test('an offset past the end returns no items but the full total', async () => {
-    expect(await repo.findMany({ offset: 100, withTotal: true })).toEqual({ items: [], limit: null, offset: 100, total: 5 });
+    expect(await repo.findMany({ offset: 100, withTotal: true })).toEqual({ items: [], limit: 25, offset: 100, nextCursor: null, total: 5 });
   });
 
   test('a negative offset is treated as 0', async () => {

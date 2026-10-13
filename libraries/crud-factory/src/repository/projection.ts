@@ -15,6 +15,13 @@ export function selection(visible: ColumnMap, keys?: readonly string[]): ColumnM
   return Object.fromEntries(Object.entries(visible).filter(([key]) => keys.includes(key)));
 }
 
+/** Copies only the given keys of a row. */
+export function pickFields(row: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
+  const picked: Record<string, unknown> = {};
+  for (const key of keys) picked[key] = row[key];
+  return picked;
+}
+
 /**
  * Types a column map as the table's own column objects.
  * The cast is safe because every value came from `getColumns(table)` under the same key.

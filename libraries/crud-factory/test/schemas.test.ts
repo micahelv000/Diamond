@@ -16,6 +16,7 @@ describe('listQuery', () => {
       total: 'true',
     });
     expect(parsed).toEqual({
+      where: {},
       sort: ['-createdAt', 'name'],
       // Passed through: the repository applies the default and clamps to maxLimit.
       limit: 500,
@@ -26,16 +27,19 @@ describe('listQuery', () => {
   });
 
   test('leaves limit to the repository and defaults offset to 0', () => {
-    expect(schemas.listQuery.parse({})).toEqual({ sort: undefined, limit: undefined, offset: 0, columns: undefined, withTotal: undefined });
+    expect(schemas.listQuery.parse({})).toEqual({ where: {}, sort: undefined, limit: undefined, offset: 0, columns: undefined, withTotal: undefined });
+  });
+
+  test('parses declared filters into where', () => {
+    const parsed = schemas.listQuery.parse({ status__in: 'active,banned', createdAt__gte: '2026-01-01T00:00:00Z', orgId__eq: '7', name__ilike: '' });
+    expect(parsed.where).toEqual({ status__in: ['active', 'banned'], createdAt__gte: new Date('2026-01-01T00:00:00Z'), orgId__eq: 7 });
   });
 
   test.each([
     ['unknown key', { nope: '1' }],
-    // `filterable` generates finder methods; the URL takes no filters, declared or not.
-    ['a filterable eq key', { status__eq: 'active' }],
-    ['a filterable in key', { status__in: 'active,banned' }],
-    ['a filterable ilike key', { name__ilike: 'al' }],
-    ['a filterable range key', { createdAt__gte: '2026-01-01' }],
+    ['an undeclared filter key', { email__eq: 'a@b.c' }],
+    ['a timestamp filter without a time', { createdAt__gte: '2026-01-01' }],
+    ['an ilike filter over 100 characters', { name__ilike: 'a'.repeat(101) }],
     ['hidden field', { fields: 'passwordHash' }],
     ['a visible but unsortable key', { sort: 'email' }],
     ['negative offset', { offset: '-1' }],

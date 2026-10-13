@@ -5,8 +5,9 @@ import type {
   AnyEntity, Database, ListOptions, Logger, PaginationConfig, PrimaryKeyValue, QueryOptions, RepositoryFinders, Row, VisibleKey,
 } from '../types.ts';
 import { buildFinders } from './finders.ts';
-import { selection, typedColumns, typedRows, visibleColumns, type ColumnMap } from './projection.ts';
-import { orderBy } from './sort.ts';
+import { pickFields, selection, typedColumns, typedRows, visibleColumns, type ColumnMap } from './projection.ts';
+import { createKeyset } from './cursor.ts';
+import { orderBy, sortKeys } from './sort.ts';
 import type { CrudRepository, CrudRepositoryBase, CrudRepositoryMethods, RepositoryInternals, RunnableQuery } from './types.ts';
 import { whereToSql } from './utils.ts';
 
@@ -71,17 +72,15 @@ function firstOrNotFound<R>(rows: R[], name: string): R {
 }
 
 /**
- * Returns the page size for a list call, or `undefined` for no limit.
- * `maxLimit` caps both the requested and the default limit.
+ * Returns the page size for a list call. Lists are never unlimited: missing settings fall back to the
+ * library defaults, and `maxLimit` caps both the requested and the default limit.
  */
-function resolveLimit(requested: number | undefined, pagination: PaginationConfig = {}): number | undefined {
-  const { defaultLimit, maxLimit } = pagination;
+function resolveLimit(requested: number | undefined, { defaultLimit = 25, maxLimit = 100 }: PaginationConfig = {}): number {
   // A non-finite limit counts as not given, so it can't slip past `maxLimit`.
-  const given = requested !== undefined && Number.isFinite(requested) ? requested : undefined;
-  const limit = given ?? defaultLimit ?? maxLimit;
-  if (limit === undefined) return undefined;
+  const given = requested !== undefined && Number.isFinite(requested);
+  const limit = given ? requested : defaultLimit;
   const atLeastOne = Math.max(limit, 1);
-  return maxLimit === undefined ? atLeastOne : Math.min(atLeastOne, maxLimit);
+  return Math.min(atLeastOne, maxLimit);
 }
 
 /** Creates a typed CRUD repository for an entity. Works with any async Postgres drizzle database. */
@@ -99,7 +98,8 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
     and(softDeleteColumn ? isNull(softDeleteColumn) : undefined, scope);
   const byId = (id: PrimaryKeyValue<E>, scope?: SQL) => and(eq(primaryColumn, id), baseWhere(scope));
   const run = <R>(log: Logger | undefined, query: RunnableQuery<R>) => execute(log, name, query, () => query.toSQL().sql);
-  const sortBy = (sort?: readonly string[]) => orderBy(visible, sort ?? defaultSort, config.primaryKey);
+  const sortBy = (sort?: readonly string[]) => orderBy(sortKeys(visible, sort ?? defaultSort, config.primaryKey));
+  const keyset = createKeyset(table);
 
   const findMany: CrudRepositoryMethods<E>['findMany'] = (options = {}) =>
     mapErrors(async () => {
@@ -107,14 +107,34 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
       const where = and(baseWhere(options.scope), whereToSql(visible, config.filterable ?? {}, options.where));
       const limit = resolveLimit(options.limit, config.pagination);
       const offset = options.offset !== undefined && Number.isFinite(options.offset) ? Math.max(options.offset, 0) : 0;
-      const query = executor.select(selection(visible, options.columns)).from(table).where(where).orderBy(...sortBy(options.sort)).$dynamic();
-      const page = (limit === undefined ? query : query.limit(limit)).offset(offset);
+      if (options.cursor !== undefined && offset > 0) throw new BadRequestError('Use either cursor or offset, not both');
+
+      const sort = options.sort ?? defaultSort;
+      const keys = sortKeys(visible, sort, config.primaryKey);
+      let afterCursor: SQL | undefined;
+      if (options.cursor !== undefined) afterCursor = keyset.after(keys, keyset.decode(options.cursor, sort, keys));
+
+      const returned = selection(visible, options.columns);
+      const page = executor
+        .select({ ...returned, ...keyset.fields(keys) })
+        .from(table)
+        .where(and(where, afterCursor))
+        .orderBy(...orderBy(keys))
+        .limit(limit + 1)
+        .offset(offset);
       const [rows, total] = await Promise.all([
         run(options.log, page),
         // `$count` can't print its SQL, so it is logged as `count`.
         options.withTotal ? execute(options.log, name, executor.$count(table, where), () => 'count') : undefined,
       ]);
-      return { items: typedRows(rows), limit: limit ?? null, offset, ...(total === undefined ? {} : { total }) };
+
+      const pageRows = rows.slice(0, limit);
+      const lastRow = pageRows.at(-1);
+      let nextCursor: string | null = null;
+      if (rows.length > limit && lastRow !== undefined) nextCursor = keyset.encode(sort, keys, lastRow);
+      // The cursor fields are internal, so callers get only the columns they asked for.
+      const items = pageRows.map((row) => pickFields(row, Object.keys(returned)));
+      return { items: typedRows(items), limit, offset, nextCursor, ...(total === undefined ? {} : { total }) };
     });
 
   const repository: CrudRepositoryBase<E> = {

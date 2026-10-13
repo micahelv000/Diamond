@@ -74,7 +74,7 @@ const flightEntity = defineEntity(flights, {
   create: { omit: ['id', 'createdAt', 'actualDeparture', 'actualArrival', 'status'] },
   // `omit` is per operation, so `createdAt` is listed again.
   update: { omit: ['flightNumber', 'createdAt'] },
-  // Each operator generates a typed finder; a column with both `gte` and `lte` also gets a `Between` finder.
+  // Each operator generates a typed finder and a `?column__operator=` list filter; `gte` plus `lte` also gets a `Between` finder.
   filterable: {
     scheduledDeparture: ['gte', 'lte'], status: ['eq', 'in'],
     originCode: ['eq'], destinationCode: ['eq'], aircraftId: ['eq'],
@@ -181,7 +181,7 @@ const baseFlightService = createService<typeof flightEntity, Caller, typeof flig
 // Custom service methods. Calling `base` methods with `ctx` runs the hooks, logging, scope and transaction.
 const flightService = baseFlightService.extend((base) => ({
   delayFlight: async (id: number, minutes: number, ctx: ServiceContext<Caller>): Promise<Flight> => {
-    
+  
     const flight = await base.findById(id, { columns: ['scheduledDeparture', 'scheduledArrival'] }, ctx);
     if (!flight) throw new NotFoundError('flights not found');
     const shift = (date: Date) => new Date(date.getTime() + minutes * 60_000);
@@ -238,17 +238,11 @@ await app.register(
         schema: { querystring: z.object({ from: z.coerce.date(), to: z.coerce.date() }), response: { 200: stats } },
       }, (request) => service.repository.statsByOrigin(request.query.from, request.query.to, serviceContext(request)));
 
-      // The URL has no filter syntax, so each finder a client needs gets its own route.
+      // A route over a finder, for a query with its own parameters.
       scope.get('/departing', {
         config: { crudOperation: 'list' },
         schema: { querystring: z.object({ from: z.coerce.date(), to: z.coerce.date() }), response: { 200: entity.schemas.listResult } },
       }, (request) => service.findByScheduledDepartureBetween(request.query.from, request.query.to, serviceContext(request)));
-
-      const statuses = z.string().transform((value) => value.split(',')).pipe(z.array(z.enum(flightStatus.enumValues)).min(1));
-      scope.get('/by-status', {
-        config: { crudOperation: 'list' },
-        schema: { querystring: z.object({ status: statuses }), response: { 200: entity.schemas.listResult } },
-      }, (request) => service.findByStatusIn(request.query.status, serviceContext(request), { columns: ['id', 'flightNumber', 'status'] }));
 
       scope.get('/board', {
         config: { crudOperation: 'list' },
@@ -277,6 +271,7 @@ await app.register(
 const call = async (method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, who?: string, payload?: object) => {
   const response = await app.inject({ method, url, payload, headers: who ? { 'x-user': who } : {} });
   console.log(`${method} ${url} as ${who ?? 'anonymous'} → ${response.statusCode} ${response.body}`);
+  return response;
 };
 const at = (time: string) => `2026-10-12T${time}:00.000Z`;
 const flight = (flightNumber: string, from: string, to: string, aircraftId: number, departs: string, arrives: string) => ({
@@ -293,15 +288,19 @@ await call('POST', '/flights', 'ops', flight('LY400', 'TLV', 'CDG', 3, '15:00', 
 await call('POST', '/flights', 'ops', flight('LY401', 'TLV', 'CDG', 99, '15:00', '19:00'));
 await call('POST', '/flights', 'ops', flight('LY402', 'LHR', 'CDG', 2, '10:00', '14:00'));
 await call('POST', '/flights', 'ops', flight('LY315', 'TLV', 'LHR', 3, '20:00', '23:00'));
-// The generated list rejects filter parameters, since filtering goes through finder routes.
+// The generated list accepts the filters declared in `filterable`.
 await call('GET', `/flights/departing?from=${at('06:30')}&to=${at('10:00')}`, 'passenger');
 await call('GET', '/flights/board?origin=TLV', 'passenger');
 await call('GET', '/flights?originCode__eq=TLV', 'passenger');
 await call('GET', '/flights?fields=id,flightNumber,scheduledDeparture', 'passenger');
+// Cursor paging: the first page's `nextCursor` fetches the page right after it.
+const firstPage = await call('GET', '/flights?limit=2&fields=id,flightNumber', 'passenger');
+const { nextCursor } = z.object({ nextCursor: z.string() }).parse(firstPage.json());
+await call('GET', `/flights?limit=2&fields=id,flightNumber&cursor=${nextCursor}`, 'passenger');
 await call('PATCH', '/flights/2', 'ops', { status: 'departed' });
 await call('PATCH', '/flights/1', 'ops', { status: 'departed', actualDeparture: at('06:40') });
 await call('PATCH', '/flights/4', 'ops', { status: 'boarding' });
-await call('GET', '/flights/by-status?status=boarding,departed', 'passenger');
+await call('GET', '/flights?status__in=boarding,departed&fields=id,flightNumber,status', 'passenger');
 await call('GET', '/flights/delayed?minMinutes=15', 'passenger');
 await call('GET', '/flights/1/details', 'passenger');
 await call('GET', `/flights/stats?from=${at('00:00')}&to=2026-10-13T00:00:00.000Z`, 'passenger');

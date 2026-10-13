@@ -43,7 +43,7 @@ const kindsEntity = defineEntity(kinds, {
   update: { omit: ['internal', 'locked'] },
   softDelete: 'deletedAt',
   sortable: ['int', 'txt'],
-  filterable: { txt: ['eq', 'ilike'], int: ['gte', 'lte'] },
+  filterable: { txt: ['eq', 'ilike'], int: ['gte', 'lte'], bool: ['eq'] },
 });
 const { schemas } = kindsEntity;
 
@@ -310,8 +310,13 @@ describe('listQuery', () => {
     expect(parse(schemas.listQuery, { total: 'maybe' }).ok).toBe(false);
   });
 
-  test.each(['txt__eq', 'where'])('a filter-like key %j in the URL is rejected', (key) => {
-    expect(parse(schemas.listQuery, { [key]: 'x' }).ok).toBe(false);
+  test('a boolean filter reads "false" as false and rejects other words', () => {
+    expect(parse(schemas.listQuery, { bool__eq: 'false' })).toMatchObject({ ok: true, data: { where: { bool__eq: false } } });
+    expect(parse(schemas.listQuery, { bool__eq: 'maybe' }).ok).toBe(false);
+  });
+
+  test.each([['where', 'x'], ['txt__in', 'x'], ['int__gte', 'abc']])('rejects the URL filter %s=%j', (key, value) => {
+    expect(parse(schemas.listQuery, { [key]: value }).ok).toBe(false);
   });
 });
 

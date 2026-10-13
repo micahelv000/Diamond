@@ -41,7 +41,7 @@ const newUser = (overrides: Record<string, unknown> = {}) => ({
 });
 
 const rowSchema = z.looseObject({ id: z.number() });
-const listSchema = z.object({ items: z.array(z.record(z.string(), z.unknown())), limit: z.number().nullable(), offset: z.number() });
+const listSchema = z.object({ items: z.array(z.record(z.string(), z.unknown())), limit: z.number(), offset: z.number() });
 
 async function seedUser(app: FastifyInstance, overrides: Record<string, unknown> = {}): Promise<number> {
   const response = await app.inject({ method: 'POST', url: '/users', headers: as(alice), payload: newUser(overrides) });
@@ -160,13 +160,34 @@ describe('open CRUD routes', () => {
     expect(withTotal.json()).toMatchObject({ total: 4 });
   });
 
-  test('filters are not URL options: a filterable column key is a 400, even when blank', async () => {
-    await seedUser(app());
-    for (const query of ['status__eq=active', 'status__in=active,banned', 'name__ilike=a', 'orgId__eq=&status__in=']) {
-      const response = await app().inject({ method: 'GET', url: `/users?${query}` });
-      expect(response.statusCode, query).toBe(400);
-      expect(response.json()).toMatchObject({ code: 'BAD_REQUEST' });
-    }
+  test('each declared filter operator works from the querystring, and blank values are ignored', async () => {
+    const cleo = await seedUser(app(), { email: 'c@x.io', name: 'Cleo', status: 'active' });
+    await seedUser(app(), { email: 'b@x.io', name: 'Bert', status: 'banned' });
+    await seedUser(app(), { email: 'a@x.io', name: 'Abe', status: 'invited' });
+    await db.update(users).set({ createdAt: new Date('2026-02-01T00:00:00Z') }).where(eq(users.id, cleo));
+
+    const names = async (query: string) =>
+      listSchema.parse((await app().inject({ method: 'GET', url: `/users?sort=name&limit=3&${query}` })).json()).items.map((item) => item.name);
+
+    expect(await names('status__eq=active')).toEqual(['Cleo']);
+    expect(await names('status__in=active,banned')).toEqual(['Bert', 'Cleo']);
+    expect(await names('status__in=active&status__in=invited')).toEqual(['Abe', 'Cleo']);
+    expect(await names('name__ilike=B')).toEqual(['Abe', 'Bert']);
+    expect(await names('createdAt__gte=2026-01-01T00:00:00Z&createdAt__lte=2026-03-01T00:00:00Z')).toEqual(['Cleo']);
+    expect(await names('status__eq=&name__ilike=')).toEqual(['Abe', 'Bert', 'Cleo']);
+  });
+
+  test.each([
+    ['an invalid enum value', 'status__eq=nope'],
+    ['an impossible date', 'createdAt__gte=2026-02-30T00:00:00Z'],
+    ['a non-numeric number', 'orgId__eq=abc'],
+    ['an undeclared column', 'email__eq=a@x.io'],
+    ['an undeclared operator', 'status__ilike=a'],
+    ['a hidden column', 'passwordHash__eq=x'],
+  ])('a URL filter with %s is a 400', async (_label, query) => {
+    const response = await app().inject({ method: 'GET', url: `/users?${query}` });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'BAD_REQUEST' });
   });
 
   test('?sort= is still limited to sortable: a visible but unsortable column is a 400', async () => {

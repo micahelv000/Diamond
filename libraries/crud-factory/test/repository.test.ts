@@ -209,22 +209,21 @@ describe('list limit', () => {
   const postsWith = (pagination: EntityConfig<typeof posts>['pagination']) =>
     createRepository(db, defineEntity(posts, { primaryKey: 'id', pagination }));
 
-  test('without pagination config, a list returns every row and reports limit null', async () => {
+  test('without pagination config, a list defaults to 25 rows', async () => {
     const result = await postRepository.findMany();
-    expect(result.items).toHaveLength(POST_COUNT);
-    expect(result.limit).toBeNull();
-  });
-
-  test('without pagination config, a requested limit is used as-is (no cap)', async () => {
-    const result = await postRepository.findMany({ limit: 25 });
     expect(result.items).toHaveLength(25);
     expect(result.limit).toBe(25);
+  });
+
+  test('without pagination config, a requested limit is capped at 100', async () => {
+    expect((await postRepository.findMany({ limit: POST_COUNT })).items).toHaveLength(POST_COUNT);
+    expect((await postRepository.findMany({ limit: 500 })).limit).toBe(100);
   });
 
   test('without pagination config, offset still pages through the rest', async () => {
     const result = await postRepository.findMany({ offset: 20 });
     expect(result.items).toHaveLength(POST_COUNT - 20);
-    expect(result).toMatchObject({ limit: null, offset: 20 });
+    expect(result).toMatchObject({ limit: 25, offset: 20 });
   });
 
   test('maxLimit alone is the default page size and caps larger requests', async () => {
@@ -235,10 +234,11 @@ describe('list limit', () => {
     expect((await repository.findMany({ limit: 4 })).items).toHaveLength(4);
   });
 
-  test('defaultLimit alone sets the page size but a client may ask for more', async () => {
+  test('defaultLimit alone sets the page size and keeps the default cap', async () => {
     const repository = postsWith({ defaultLimit: 5 });
     expect((await repository.findMany()).items).toHaveLength(5);
     expect((await repository.findMany({ limit: 20 })).items).toHaveLength(20);
+    expect((await repository.findMany({ limit: 500 })).limit).toBe(100);
   });
 
   test('defaultLimit and maxLimit together: default when not asked, capped when asked for too many', async () => {
@@ -249,13 +249,6 @@ describe('list limit', () => {
 
   test('a limit below 1 is raised to 1', async () => {
     expect((await postRepository.findMany({ limit: 0 })).items).toHaveLength(1);
-  });
-
-  test('an unlimited query has no LIMIT clause in its SQL', async () => {
-    const statements: string[] = [];
-    const log = { debug: (details: object) => statements.push(JSON.stringify(details)), warn: () => {} };
-    await postRepository.findMany({ log });
-    expect(statements.join()).not.toMatch(/\blimit\b/i);
   });
 });
 

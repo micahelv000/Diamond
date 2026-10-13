@@ -72,7 +72,7 @@ describe('repository finders', () => {
 
   test('options: columns, limit, offset and withTotal work as in findMany', async () => {
     const page = await repo.findByOrgId(1, { columns: ['id', 'name'], sort: ['name'], limit: 1, offset: 1, withTotal: true });
-    expect(page).toEqual({ items: [{ id: 1, name: 'Alice' }], limit: 1, offset: 1, total: 3 });
+    expect(page).toEqual({ items: [{ id: 1, name: 'Alice' }], limit: 1, offset: 1, nextCursor: expect.any(String), total: 3 });
     // The fixture's defaultLimit (2) and maxLimit (3) apply too.
     expect((await repo.findByOrgId(1)).items).toHaveLength(2);
     expect((await repo.findByOrgId(1, { limit: 50 })).limit).toBe(3);

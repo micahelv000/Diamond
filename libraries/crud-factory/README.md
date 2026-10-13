@@ -17,7 +17,7 @@ import { createRepository, createService, defineEntity, requireAuth } from '@dia
 import { crudRoutes } from '@diamond/crud-factory/fastify';
 import { users } from './db/schema.ts';
 
-// 1. Define: what is hidden, writable, which finder methods to generate and what `?sort=` allows.
+// 1. Define: what is hidden, writable, which finders and URL filters to generate and what `?sort=` allows.
 const userEntity = defineEntity(users, {
   primaryKey: 'id',
   hidden: ['passwordHash'],
@@ -54,10 +54,10 @@ global setup. `examples/users.ts` is a runnable version (`npx tsx examples/users
 | `hidden` | column keys | `[]` | Never selected, returned (nor requestable via `?fields=`), written from a request body, filtered or sorted on (in the types and at runtime). |
 | `create.omit` | column keys | `[]` | Removed from the create body (e.g. `id`, `createdAt`). Hidden and `softDelete` columns are always removed. |
 | `update.omit` | column keys | `[]` | Removed from the patch body. The primary key, hidden and `softDelete` columns are always removed. |
-| `filterable` | `{ column: ('eq'\|'in'\|'ilike'\|'gte'\|'lte')[] }` | `{}` | Generates typed [finder methods](#finder-methods) on the repository and service; also the keys allowed in a code-level `where` object. `ilike` needs a text column. |
+| `filterable` | `{ column: ('eq'\|'in'\|'ilike'\|'gte'\|'lte')[] }` | `{}` | Each declared operator is both a typed [finder method](#finder-methods) on the repository and service and a [list querystring filter](#url-filters) `?column__operator=`; also the keys allowed in a code-level `where` object. `ilike` needs a text column. |
 | `sortable` | column keys | `[]` | Allowed `?sort=` keys on the list route. Code can sort by any visible column. |
 | `defaultSort` | `'col'` or `'-col'` | primary key asc | The order when a query passes no `sort`. Any visible column. |
-| `pagination` | `{ defaultLimit?, maxLimit? }` | none: lists are unlimited | `defaultLimit` applies when the client sends no `?limit=` (falls back to `maxLimit`); `maxLimit` caps every request. Set it for tables that can grow large. |
+| `pagination` | `{ defaultLimit?, maxLimit? }` | `{ defaultLimit: 25, maxLimit: 100 }` | `defaultLimit` applies when no limit is given; `maxLimit` caps every list, from the URL or from code. Set either one to override just that default; lists are never unlimited. |
 | `softDelete` | nullable timestamp column | none | `delete` stamps it; reads skip stamped rows. |
 
 `crudRoutes(options)`:
@@ -112,8 +112,20 @@ const { items } = await flightService.findByStatusIn(['boarding', 'departed'], c
 await flightRepo.findByScheduledDepartureBetween(from, to, { sort: ['flightNumber'], limit: 20 });
 ```
 
-Finders are for your code. The list route takes no filters from the URL (`?status__eq=active` is a
-400), so give each query clients need its own route over a finder, with its own validated parameters:
+### URL filters
+
+The same operators are list querystring filters as `?column__operator=`, ANDed together:
+
+| Query | Value |
+|---|---|
+| `?status__eq=active` | the column's type: numbers, `true`/`false`, enum values, uuids, and dates in the same strict ISO format as request bodies |
+| `?status__in=active,banned` | a comma-separated list, or a repeated param, of that type |
+| `?name__ilike=al` | text to search for, case-insensitive, up to 100 characters |
+| `?createdAt__gte=2026-01-01T00:00:00Z` | the column's type, inclusive (`lte` likewise) |
+
+A blank value (`?status__eq=`) is ignored. An invalid value, or a column/operator pair not declared
+in `filterable`, is a 400. For a query that needs its own parameters, add a route over a finder in
+`extend`:
 
 ```ts
 extend: (scope, { service, entity, serviceContext }) => {
@@ -145,12 +157,35 @@ The list route's querystring:
 | Query | Meaning |
 |---|---|
 | `?sort=-createdAt,name` | `-` for descending; only `sortable` keys |
-| `?limit=20&offset=40` | offset pagination; without `?limit=` every matching row is returned unless the entity sets `pagination`; capped at `maxLimit` when set |
+| `?limit=20&offset=40` | offset pagination; without `?limit=` the page holds `defaultLimit` rows (25 by default), and any limit is capped at `maxLimit` (100 by default) |
+| `?cursor=…` | [cursor pagination](#cursor-pagination): the page after the one that returned this `nextCursor` |
 | `?fields=id,name` | only these columns |
 | `?total=true` | also return `total` (one extra `count(*)`, run in parallel with the page) |
+| `?status__in=active,banned` | [filters](#url-filters) declared in `filterable` |
 
-Unknown query keys, filter keys included, are a 400, not silently ignored. The list response is
-`{ items, limit, offset, total? }`, where `limit: null` means no limit was applied.
+Unknown query keys, including undeclared filters, are a 400, not silently ignored. The list response
+is `{ items, limit, offset, nextCursor, total? }`, where `limit` is the page size actually used.
+
+### Cursor pagination
+
+Every list result, from `findMany`, the finders, the service and the list route, has a `nextCursor`:
+an opaque string, or `null` on the last page. Pass it back to get the next page, keeping the same
+`sort`, filters and scope:
+
+```ts
+const first = await userRepo.findMany({ sort: ['-createdAt'], limit: 20 });
+const second = await userRepo.findMany({ sort: ['-createdAt'], limit: 20, cursor: first.nextCursor ?? undefined });
+```
+
+Over HTTP: `GET /users?sort=-createdAt&limit=20`, then `GET /users?sort=-createdAt&limit=20&cursor=<nextCursor>`.
+
+- The next page is a `where` on the sort columns that starts right after the previous page's last row,
+  so with a matching index it costs the same at any depth, and rows inserted or deleted meanwhile don't shift it. Offset paging
+  costs O(offset) and can repeat or skip rows when data changes, but it can jump to any page.
+- A cursor works with any sort, including mixed directions and nullable columns, and with `?fields=`.
+- A malformed cursor, one made for another `sort`, or a cursor with a non-zero `offset` is a 400.
+- Offset pages return a `nextCursor` too, so a client can switch to cursors at any point.
+- `total` (`withTotal`) still counts every match, ignoring the cursor.
 
 ### Indexes
 
@@ -169,7 +204,7 @@ export const users = pgTable('users', { /* … */ }, (t) => [
 - `eq`/`in`/`gte`/`lte` use btree indexes; in a composite one, put equality columns before the range column.
 - `?total=true` (or `withTotal`) is a `count(*)` over every match: use it sparingly on large tables. `withTotal`
   runs the page and the count in parallel, so it may hold 2 pool connections.
-- `offset` costs O(offset). For deep paging, add a keyset query with `repo.extend` (`where (created_at, id) < ($1, $2)`).
+- `offset` costs O(offset). For deep paging, use [cursors](#cursor-pagination).
 
 ## Permissions
 

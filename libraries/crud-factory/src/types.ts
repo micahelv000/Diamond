@@ -33,9 +33,10 @@ export interface EntityConfig<T extends PgTable> {
   update?: WriteConfig<ColumnKey<T>>;
   /**
    * The filter operators each column allows. Each operator adds a typed finder method to the
-   * repository and service, and a `column__operator` key for `where` objects.
-   * `ilike` needs a text column; `gte` plus `lte` also adds a range finder. The list route never
-   * reads filters from the URL. Only list indexed columns, or queries will scan the whole table.
+   * repository and service, a `column__operator` key for `where` objects, and the same key as a list
+   * route querystring filter. Other filter keys in the URL get a 400.
+   * `ilike` needs a text column; `gte` plus `lte` also adds a range finder. Only list indexed
+   * columns, or queries will scan the whole table.
    */
   filterable?: { [K in ColumnKey<T>]?: readonly FilterOperator[] };
   /**
@@ -48,7 +49,10 @@ export interface EntityConfig<T extends PgTable> {
    * Defaults to the primary key, which is always the final tie-breaker.
    */
   defaultSort?: string;
-  /** Page-size limits for lists. Without it, a list returns every matching row unless the caller sets a limit. */
+  /**
+   * Page-size limits for lists. Either setting can be left out to keep its default; lists are never unlimited.
+   * @default { defaultLimit: 25, maxLimit: 100 }
+   */
   pagination?: PaginationConfig;
   /**
    * A nullable timestamp column that turns delete into a soft delete: the row gets the current time
@@ -66,11 +70,17 @@ export interface WriteConfig<K extends string> {
   omit?: readonly K[];
 }
 
-/** Page-size settings for lists. Without them, a list is unlimited. */
+/** Page-size settings for lists. */
 export interface PaginationConfig {
-  /** Rows returned when no limit is given. Falls back to `maxLimit`, then to no limit. */
+  /**
+   * Rows returned when no limit is given. Lowered to `maxLimit` if larger.
+   * @default 25
+   */
   defaultLimit?: number;
-  /** The most rows one list can return. Larger limits are lowered to this. */
+  /**
+   * The most rows one list can return. Larger limits are lowered to this.
+   * @default 100
+   */
   maxLimit?: number;
 }
 
@@ -212,11 +222,23 @@ export interface ListOptions<E extends AnyEntity, K extends VisibleKey<E> = Visi
    * always added last so pages stay stable.
    */
   sort?: readonly SortSpec<E>[];
-  /** How many rows to return. Falls back to `pagination.defaultLimit` and is capped at `pagination.maxLimit`. */
+  /**
+   * How many rows to return. Falls back to `pagination.defaultLimit` and is capped at `pagination.maxLimit`.
+   * @default 25
+   */
   limit?: number;
-  /** How many rows to skip. Defaults to 0. */
+  /** How many rows to skip. Defaults to 0. Can't be combined with `cursor`. */
   offset?: number;
-  /** Also return the count of all matching rows as `total`. This runs an extra count query. */
+  /**
+   * A `nextCursor` from an earlier page: this page starts right after that page's last row. Pass the
+   * same `sort`, filters and scope as the earlier call. A malformed cursor, one made for another `sort`,
+   * or one combined with a non-zero `offset` throws `BadRequestError`.
+   */
+  cursor?: string;
+  /**
+   * Also return the count of all matching rows as `total`. This runs an extra count query. The count
+   * ignores `cursor` and `offset`, so it covers every page.
+   */
   withTotal?: boolean;
 }
 
@@ -230,10 +252,12 @@ export interface FindByIdOptions<K extends string> {
 export interface ListResult<E extends AnyEntity, K extends VisibleKey<E> = VisibleKey<E>> {
   /** The rows on this page. */
   items: Simplify<Pick<Row<E>, K>>[];
-  /** The page size actually used, after defaults and the cap. `null` means no limit was applied. */
-  limit: number | null;
+  /** The page size actually used, after defaults and the cap. */
+  limit: number;
   /** How many rows were skipped before this page. */
   offset: number;
+  /** Pass as `cursor` to get the page after this one. `null` when this is the last page. */
+  nextCursor: string | null;
   /** The number of matching rows across all pages. Only set when `withTotal` was requested. */
   total?: number;
 }

@@ -2,10 +2,10 @@ import { extractExtendedColumnType, getColumns, type Column } from 'drizzle-orm'
 import type { PgTable } from 'drizzle-orm/pg-core';
 import { bigintStringModeSchema, createSchemaFactory } from 'drizzle-orm/zod';
 import { z } from 'zod';
-import type { AnyEntity, EntityConfig, EntitySchemas } from './types.ts';
+import type { AnyEntity, EntityConfig, EntitySchemas, FilterOperator } from './types.ts';
 
 const bodyFactory = createSchemaFactory();
-// Path params arrive as strings.
+// Path params and query values arrive as strings.
 const queryFactory = createSchemaFactory({ coerce: { number: true, bigint: true } });
 
 // JSON has no Date or bigint type. Request bodies send them as strings, checked by Zod's and drizzle's validators.
@@ -28,8 +28,15 @@ function writeSchema(column: Column): z.ZodType | undefined {
   return undefined;
 }
 
+// Query values are strings, so booleans need `stringbool` (coercion reads "false" as true) and dates use the body formats.
+function queryValueSchema(column: Column): z.ZodType | undefined {
+  const { type, constraint } = extractExtendedColumnType(column);
+  if (type === 'boolean') return z.stringbool();
+  return constraint === 'date' ? writeSchema(column) : undefined;
+}
+
 // Refinement functions keep drizzle's nullable and optional wrapping. The keys are only known at runtime.
-function refinements(table: PgTable, pick: (column: Column) => z.ZodType | undefined): Record<never, never> {
+export function refinements(table: PgTable, pick: (column: Column) => z.ZodType | undefined): Record<never, never> {
   return Object.fromEntries(
     Object.entries(getColumns(table)).flatMap(([key, column]) => {
       const schema = pick(column);
@@ -44,7 +51,7 @@ function typed<Out, In = unknown>(schema: z.ZodType): z.ZodType<Out, In> {
   return schema as z.ZodType<Out, In>;
 }
 
-type Shape = Record<string, z.ZodType>;
+export type Shape = Record<string, z.ZodType>;
 
 function objectWithout(shape: Shape, keys: readonly string[]) {
   const omitted = new Set(keys);
@@ -61,26 +68,50 @@ function commaList<S extends z.ZodType>(item: S) {
   return z.preprocess((value) => (typeof value === 'string' ? value.split(',') : value), z.array(item));
 }
 
-// The URL takes no filters, since `filterable` only generates finder methods for code.
-// `.strict()` turns any unknown key into a 400.
-function buildListQuery(config: EntityConfig<PgTable>, visibleKeys: [string, ...string[]]) {
+/** The querystring value schema for one filter operator, given the column's own value schema. */
+function filterValueSchema(operator: FilterOperator, columnValue: z.ZodType): z.ZodType {
+  if (operator === 'in') return commaList(columnValue);
+  if (operator === 'ilike') return z.string().max(100);
+  return columnValue;
+}
+
+// Each operator in `filterable` becomes a `column__operator` key, parsed into the value type `where` expects.
+function filterShape(config: EntityConfig<PgTable>, valueShape: Shape): Shape {
+  const shape: Shape = {};
+  for (const [column, operators = []] of Object.entries(config.filterable ?? {})) {
+    const columnValue = valueShape[column];
+    if (!columnValue) throw new Error(`Filterable column "${column}" has no schema`);
+    for (const operator of operators) {
+      shape[`${column}__${operator}`] = blankAsUndefined(filterValueSchema(operator, columnValue).optional());
+    }
+  }
+  return shape;
+}
+
+// `.strict()` turns any unknown key, including an undeclared filter, into a 400.
+function buildListQuery(config: EntityConfig<PgTable>, visibleKeys: [string, ...string[]], valueShape: Shape) {
   const sortable = config.sortable ?? [];
   const sortSpecs = sortable.flatMap((key) => [key, `-${key}`]);
 
   return z
     .object({
+      ...filterShape(config, valueShape),
       sort: (sortSpecs.length > 0 ? commaList(z.enum(sortSpecs)) : z.never()).optional(),
       // The repository applies the default and the `maxLimit` cap, so code callers get them too.
       limit: z.coerce.number().int().min(1).optional(),
       offset: z.coerce.number().int().min(0).default(0),
+      // The repository decodes and checks the cursor, so code callers get the same 400s.
+      cursor: blankAsUndefined(z.string().optional()),
       fields: commaList(z.enum(visibleKeys)).optional(),
       total: z.stringbool().optional(),
     })
     .strict()
-    .transform(({ sort, limit, offset, fields, total }) => ({
+    .transform(({ sort, limit, offset, cursor, fields, total, ...where }) => ({
+      where,
       sort,
       limit,
       offset,
+      cursor,
       columns: fields,
       withTotal: total,
     }));
@@ -105,7 +136,7 @@ export function buildSchemas<E extends AnyEntity>(
     config.primaryKey,
   ]).refine((patch) => Object.keys(patch).length > 0, { message: 'At least one field is required' });
 
-  const queryShape: Shape = queryFactory.createSelectSchema(table).shape;
+  const queryShape: Shape = queryFactory.createSelectSchema(table, refinements(table, queryValueSchema)).shape;
   const primaryKeySchema = queryShape[config.primaryKey];
   if (!primaryKeySchema) throw new Error(`Primary key "${config.primaryKey}" has no schema`);
 
@@ -120,13 +151,14 @@ export function buildSchemas<E extends AnyEntity>(
     create: typed(create),
     update: typed(update),
     params: typed(z.object({ id: blankAsUndefined(primaryKeySchema) })),
-    listQuery: typed(buildListQuery(config, visibleKeys)),
+    listQuery: typed(buildListQuery(config, visibleKeys, queryShape)),
     getQuery: typed(getQuery),
     listResult: typed(
       z.object({
         items: z.array(read.partial()),
-        limit: z.number().nullable(),
+        limit: z.number(),
         offset: z.number(),
+        nextCursor: z.string().nullable(),
         total: z.number().optional(),
       }),
     ),
