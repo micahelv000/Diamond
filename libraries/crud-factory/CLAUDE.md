@@ -3,7 +3,7 @@ The core of this service is a dynamic Repository Factory. When instructed to sca
 1. **Strict Generics:** The factory must be built using TypeScript generics parameterized over Drizzle's `PgTable`. Do not use weak typing or `any`.
 2. **Type Inference:** Base CRUD operations (`create`, `findMany`, `findById`, `update`, `delete`) must strictly type their inputs and outputs using Drizzle's `$inferSelect<T>` and `$inferInsert<T>` corresponding to the entity.
 3. **Extensibility (The Custom Query Hook):** The generated repository must expose a clean extension mechanism (e.g., class inheritance or a composable function API) to allow the injection of custom, entity-specific complex queries (joins, window functions) without modifying or overriding the base factory CRUD methods.
-4. **Dynamic SQL Operators:** Ensure the generic `findMany` and `update` methods support dynamic `where` clauses using Drizzle's `SQL` chunks and operators (`eq`, `inArray`, `ilike`).
+4. **Dynamic SQL Operators:** Ensure the generic `findMany` method supports dynamic `where` clauses using Drizzle's `SQL` chunks and operators (`eq`, `inArray`, `ilike`).
    - Request/response validation is Zod (schemas derived from the table via `drizzle-orm/zod`), not TypeBox.
 
 # Code Style
