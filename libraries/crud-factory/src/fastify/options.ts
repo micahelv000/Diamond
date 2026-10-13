@@ -61,6 +61,7 @@ export interface CrudHooksConfig {
 export interface CrudRoutesOptions<E extends CrudEntity<E>, TCtx, S = CrudService<E, TCtx>> {
   // `S &` lets TypeScript infer the service's full type into `S`, and `NoInfer` makes `TCtx` come only from
   // `context`. Only the built-in methods are checked, because the generated finder types break `TCtx` inference.
+  // The full explanation is in docs/type-inference.md.
   /** The service the routes call. Its entity decides the URL params, the schemas and the allowed sort keys. */
   service: S & CrudServiceMethods<E, NoInfer<TCtx>>;
   /**

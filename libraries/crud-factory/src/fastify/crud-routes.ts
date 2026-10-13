@@ -12,7 +12,7 @@ import { isOperationEnabled } from './utils.ts';
 
 // Fastify's request part types can't be resolved while the entity is generic. The validator has already
 // parsed the value with this schema before the handler runs, so the cast is safe.
-function validated<T>(_schema: z.ZodType<T, unknown>, value: unknown): T {
+function alreadyValidated<T>(_schema: z.ZodType<T, unknown>, value: unknown): T {
   return value as T;
 }
 
@@ -52,16 +52,15 @@ function wrapHandlerInTransaction(db: Database, routeOptions: RouteOptions): voi
     return db.transaction(async (tx) => {
       request.crudTx = tx;
       // Sending here would flush the response before COMMIT, so a failed commit would still look like a
-      // success. `send` lives on Fastify's reply prototype, so an own property hides it for this reply only.
-      const ownSend = Object.getOwnPropertyDescriptor(reply, 'send');
+      // success. Assigning `send` on this reply object only affects this one request.
+      const originalSend = reply.send;
       reply.send = rejectSend;
       try {
         // Handlers may use `this` as the Fastify instance.
         return await handler.call(this, request, reply);
       } finally {
         // Restored before the transaction settles, so Fastify can send the result or the error response.
-        if (ownSend) Object.defineProperty(reply, 'send', ownSend);
-        else Reflect.deleteProperty(reply, 'send');
+        reply.send = originalSend;
         // Cleared so later hooks can't write through a finished transaction.
         request.crudTx = null;
       }
@@ -69,6 +68,7 @@ function wrapHandlerInTransaction(db: Database, routeOptions: RouteOptions): voi
   };
 }
 
+// How `S`, `E` and `TCtx` are inferred from the options: docs/type-inference.md.
 /**
  * Builds an encapsulated Fastify plugin with list, get, create, update and delete routes for one entity.
  * Register it with a prefix.
@@ -95,7 +95,7 @@ export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudSe
     // No rule ran, for example on a route outside this scope, so fail rather than run without a row scope.
     throw new Error(`${request.routeOptions.url ?? request.url}: no authorize check ran for this route`);
   };
-  const idOf = (request: FastifyRequest) => validated(schemas.params, request.params).id;
+  const idOf = (request: FastifyRequest) => alreadyValidated(schemas.params, request.params).id;
   const route = (op: Operation) => ({ config: { crudOperation: op } });
 
   return async function crudRoutesPlugin(instance) {
@@ -137,7 +137,7 @@ export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudSe
       instance.get(
         '/',
         { ...route('list'), schema: { querystring: schemas.listQuery, response: { 200: schemas.listResult } } },
-        (request) => service.findMany(validated(schemas.listQuery, request.query), serviceContext(request)),
+        (request) => service.findMany(alreadyValidated(schemas.listQuery, request.query), serviceContext(request)),
       );
     }
 
@@ -149,7 +149,7 @@ export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudSe
           schema: { params: schemas.params, querystring: schemas.getQuery, response: { 200: schemas.readPartial } },
         },
         async (request) => {
-          const query = validated(schemas.getQuery, request.query);
+          const query = alreadyValidated(schemas.getQuery, request.query);
           const row = await service.findById(idOf(request), query, serviceContext(request));
           // Matches the repository's message when a row is not found.
           if (row === null) throw new NotFoundError(`${service.entity.name} not found`);
@@ -163,7 +163,7 @@ export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudSe
         '/',
         { ...route('create'), schema: { body: schemas.create, response: { 201: schemas.read } } },
         async (request, reply) => {
-          const row = await service.create(validated(schemas.create, request.body), serviceContext(request));
+          const row = await service.create(alreadyValidated(schemas.create, request.body), serviceContext(request));
           // Returned instead of sent, so the response goes out after the transaction commits.
           reply.status(201);
           return row;
@@ -175,7 +175,7 @@ export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudSe
       instance.patch(
         '/:id',
         { ...route('update'), schema: { params: schemas.params, body: schemas.update, response: { 200: schemas.read } } },
-        (request) => service.update(idOf(request), validated(schemas.update, request.body), serviceContext(request)),
+        (request) => service.update(idOf(request), alreadyValidated(schemas.update, request.body), serviceContext(request)),
       );
     }
 

@@ -73,6 +73,8 @@ global setup. `examples/users.ts` is a runnable version (`npx tsx examples/users
 | `transaction?` | Default `true`: each request runs in one database transaction, rolled back if the handler throws. Handlers return their result; `reply.send()` throws. `false` lets each statement commit on its own. See [Transactions](#transactions). |
 
 The prefix is the normal `register` option: `app.register(crudRoutes({...}), { prefix: '/users' })`.
+No type arguments are needed: how `crudRoutes` infers them from the options is explained in
+[docs/type-inference.md](docs/type-inference.md).
 
 ## Field selection
 
