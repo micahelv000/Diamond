@@ -175,25 +175,46 @@ export type RangeKey<E extends AnyEntity> = {
 }[keyof Filterable<E> & string];
 /** The type of both ends of a range finder. */
 export type RangeValue<E extends AnyEntity, K extends string> = ColumnValue<E, K>;
+/** The range finder method name for a column. */
+export type BetweenFinderName<C extends string> = `findBy${Capitalize<C>}Between`;
 
-// Signatures are written inline, not named, so hovers show the parameters instead of a long type name.
+// How the finder types work is explained in docs/finder-types.md.
+
+// `[Value] extends [unknown] ? … : never` is always true. It only makes editor hovers show the function's
+// parameters instead of this type's name; see docs/finder-types.md.
+/** A repository finder for one column and operator: the rows whose column matches `value`. */
+type RepositoryFinder<E extends AnyEntity, Value> = [Value] extends [unknown]
+  ? <K extends VisibleKey<E> = VisibleKey<E>>(
+      value: Value,
+      options?: ListOptions<E, K> & QueryOptions,
+    ) => Promise<ListResult<E, K>>
+  : never;
+
+/** A repository range finder: the rows whose column is between `from` and `to`, inclusive. */
+type RepositoryRangeFinder<E extends AnyEntity, Value> = [Value] extends [unknown]
+  ? <K extends VisibleKey<E> = VisibleKey<E>>(
+      from: Value,
+      to: Value,
+      options?: ListOptions<E, K> & QueryOptions,
+    ) => Promise<ListResult<E, K>>
+  : never;
+
+/** One finder per operator declared in `filterable`. */
+type RepositoryValueFinders<E extends AnyEntity> = {
+  [P in FilterKey<E> as FinderName<E, P>]: RepositoryFinder<E, FilterValue<E, P>>;
+};
+
+/** One range finder per column that declares both `gte` and `lte`. */
+type RepositoryRangeFinders<E extends AnyEntity> = {
+  [C in RangeKey<E> as BetweenFinderName<C>]: RepositoryRangeFinder<E, RangeValue<E, C>>;
+};
+
 /**
  * The finder methods generated from `filterable`: one per allowed operator, plus an inclusive range
  * finder for columns with both `gte` and `lte`. Each returns a page like `findMany` and accepts the
  * same options; an extra `where` is combined with the finder's own condition using AND.
  */
-export type RepositoryFinders<E extends AnyEntity> = {
-  [P in FilterKey<E> as FinderName<E, P>]: <K extends VisibleKey<E> = VisibleKey<E>>(
-    value: FilterValue<E, P>,
-    options?: ListOptions<E, K> & QueryOptions,
-  ) => Promise<ListResult<E, K>>;
-} & {
-  [C in RangeKey<E> as `findBy${Capitalize<C>}Between`]: <K extends VisibleKey<E> = VisibleKey<E>>(
-    from: RangeValue<E, C>,
-    to: RangeValue<E, C>,
-    options?: ListOptions<E, K> & QueryOptions,
-  ) => Promise<ListResult<E, K>>;
-};
+export type RepositoryFinders<E extends AnyEntity> = RepositoryValueFinders<E> & RepositoryRangeFinders<E>;
 
 /** Per-call database options that every repository method accepts. */
 export interface QueryOptions {

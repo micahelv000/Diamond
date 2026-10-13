@@ -112,6 +112,9 @@ const { items } = await flightService.findByStatusIn(['boarding', 'departed'], c
 await flightRepo.findByScheduledDepartureBetween(from, to, { sort: ['flightNumber'], limit: 20 });
 ```
 
+How TypeScript builds these method names and types from the config is explained step by step in
+[docs/finder-types.md](docs/finder-types.md).
+
 ### URL filters
 
 The same operators are list querystring filters as `?column__operator=`, ANDed together:

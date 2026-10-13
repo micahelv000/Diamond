@@ -5,6 +5,7 @@ import { buildFinders } from '../repository/finders.ts';
 import type { CrudRepository } from '../repository/types.ts';
 import type {
   AnyEntity,
+  BetweenFinderName,
   CreateInput,
   Database,
   FilterKey,
@@ -77,26 +78,45 @@ export interface ServiceOptions<E extends AnyEntity, TAuth> {
   hooks?: ServiceHooks<E, TAuth>;
 }
 
-// The signatures are written out inline, not as a named type, so editor hovers show the real parameter types.
+// How the finder types work is explained in docs/finder-types.md.
+
+// `[Value] extends [unknown] ? … : never` is always true. It only makes editor hovers show the function's
+// parameters instead of this type's name; see docs/finder-types.md.
+/** A service finder for one column and operator: the rows whose column matches `value`. */
+type ServiceFinder<E extends AnyEntity, TAuth, Value> = [Value] extends [unknown]
+  ? <K extends VisibleKey<E> = VisibleKey<E>>(
+      value: Value,
+      ctx: ServiceContext<TAuth>,
+      options?: ListOptions<E, K>,
+    ) => Promise<ListResult<E, K>>
+  : never;
+
+/** A service range finder: the rows whose column is between `from` and `to`, inclusive. */
+type ServiceRangeFinder<E extends AnyEntity, TAuth, Value> = [Value] extends [unknown]
+  ? <K extends VisibleKey<E> = VisibleKey<E>>(
+      from: Value,
+      to: Value,
+      ctx: ServiceContext<TAuth>,
+      options?: ListOptions<E, K>,
+    ) => Promise<ListResult<E, K>>
+  : never;
+
+/** One finder per operator declared in `filterable`. */
+type ServiceValueFinders<E extends AnyEntity, TAuth> = {
+  [P in FilterKey<E> as FinderName<E, P>]: ServiceFinder<E, TAuth, FilterValue<E, P>>;
+};
+
+/** One range finder per column that declares both `gte` and `lte`. */
+type ServiceRangeFinders<E extends AnyEntity, TAuth> = {
+  [C in RangeKey<E> as BetweenFinderName<C>]: ServiceRangeFinder<E, TAuth, RangeValue<E, C>>;
+};
+
 /**
  * Finder methods generated from the entity's `filterable` columns. They match the repository finders but
  * take a `ctx` after the value(s), and run through the service's `findMany`, so logging, scope, soft delete
  * and the transaction all apply. `options` accepts everything `findMany` does; its `where` is ANDed with the finder's condition.
  */
-export type ServiceFinders<E extends AnyEntity, TAuth = unknown> = {
-  [P in FilterKey<E> as FinderName<E, P>]: <K extends VisibleKey<E> = VisibleKey<E>>(
-    value: FilterValue<E, P>,
-    ctx: ServiceContext<TAuth>,
-    options?: ListOptions<E, K>,
-  ) => Promise<ListResult<E, K>>;
-} & {
-  [C in RangeKey<E> as `findBy${Capitalize<C>}Between`]: <K extends VisibleKey<E> = VisibleKey<E>>(
-    from: RangeValue<E, C>,
-    to: RangeValue<E, C>,
-    ctx: ServiceContext<TAuth>,
-    options?: ListOptions<E, K>,
-  ) => Promise<ListResult<E, K>>;
-};
+export type ServiceFinders<E extends AnyEntity, TAuth = unknown> = ServiceValueFinders<E, TAuth> & ServiceRangeFinders<E, TAuth>;
 
 /**
  * The built-in service: the CRUD methods, the generated finders, the entity and the repository.
