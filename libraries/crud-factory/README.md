@@ -76,6 +76,31 @@ The prefix is the normal `register` option: `app.register(crudRoutes({...}), { p
 No type arguments are needed: how `crudRoutes` infers them from the options is explained in
 [docs/type-inference.md](docs/type-inference.md).
 
+### Calling the routes with types
+
+The plugin also has `create`, `update`, `get`, `list` and `delete` methods that send requests to its
+generated routes, with the body and query types taken from the entity. Useful in tests, scripts and examples:
+
+```ts
+const userRoutes = crudRoutes({ service: userService, context, authorize: { '*': requireAuth } });
+await app.register(userRoutes, { prefix: '/users' });
+
+const headers = { authorization: 'Bearer …' };
+const created = await userRoutes.create({ email: 'ann@x.io', name: 'Ann' }, { headers }); // POST /users
+await userRoutes.update(1, { name: 'Anne' }, { headers });                              // PATCH /users/1
+await userRoutes.get(1, { fields: ['id', 'name'] }, { headers });                       // GET /users/1?fields=id,name
+await userRoutes.list({ status__in: ['active'], sort: ['-createdAt'], limit: 10 }, { headers });
+await userRoutes.delete(1, { headers });                                                // DELETE /users/1
+created.statusCode; // Fastify's normal inject response: statusCode, json(), body
+```
+
+- A missing required field, an unknown field, an omitted or hidden field, an undeclared filter or an
+  unsortable `sort` key is a compile error.
+- The list query is sent as a querystring: arrays as comma lists, dates as ISO strings.
+- Calling before the plugin is registered throws. If the same plugin is registered twice, the requests
+  go to the last registration. Only the generated routes are covered, not `extend` routes; a route turned
+  off with `operations` answers 404.
+
 ## Field selection
 
 `?fields=id,name` returns only those columns (`SELECT id, name`, not `SELECT *`) on list and get.

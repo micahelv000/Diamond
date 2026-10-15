@@ -4,7 +4,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { and, count, eq, gt, gte, lt, ne, sql } from 'drizzle-orm';
 import { alias, index, integer, pgEnum, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
-import Fastify from 'fastify';
+import Fastify, { type LightMyRequestResponse } from 'fastify';
 import pretty from 'pino-pretty';
 import { z } from 'zod';
 import {
@@ -218,112 +218,115 @@ const callerOf = (header: string | string[] | undefined): Caller | undefined =>
   typeof header === 'string' ? callers[header] : undefined;
 
 const flightRead = flightEntity.schemas.read;
-await app.register(
-  crudRoutes({
-    service: flightService,
-    context: (request) => callerOf(request.headers['x-user']),
-    authorize: { '*': requireAuth, create: requireRole('ops'), update: requireRole('ops'), delete: requireRole('ops') },
-    extend: (scope, { service, entity, serviceContext }) => {
-      // `service.repository` holds the custom queries; `serviceContext` passes them the route's scope and logger.
-      const delayed = z.array(z.intersection(flightRead, z.object({ delayMinutes: z.number() })));
-      scope.get('/delayed', {
-        config: { crudOperation: 'list' },
-        schema: { querystring: z.object({ minMinutes: z.coerce.number().int().min(0).default(15) }), response: { 200: delayed } },
-      }, (request) => service.repository.findDelayed(request.query.minMinutes, serviceContext(request)));
+const flightRoutes = crudRoutes({
+  service: flightService,
+  context: (request) => callerOf(request.headers['x-user']),
+  authorize: { '*': requireAuth, create: requireRole('ops'), update: requireRole('ops'), delete: requireRole('ops') },
+  extend: (scope, { service, entity, serviceContext }) => {
+    // `service.repository` holds the custom queries; `serviceContext` passes them the route's scope and logger.
+    const delayed = z.array(z.intersection(flightRead, z.object({ delayMinutes: z.number() })));
+    scope.get('/delayed', {
+      config: { crudOperation: 'list' },
+      schema: { querystring: z.object({ minMinutes: z.coerce.number().int().min(0).default(15) }), response: { 200: delayed } },
+    }, (request) => service.repository.findDelayed(request.query.minMinutes, serviceContext(request)));
 
-      const details = z.intersection(flightRead, z.object({ originName: z.string(), destinationName: z.string(), aircraftModel: z.string() }));
-      scope.get('/:id/details', { config: { crudOperation: 'get' }, schema: { params: entity.schemas.params, response: { 200: details } } },
-        async (request) => {
-          const row = await service.repository.findDetails(request.params.id, serviceContext(request));
-          if (!row) throw new NotFoundError('flights not found');
-          return row;
-        });
-
-      const stats = z.array(z.object({ originCode: z.string(), originName: z.string(), flights: z.number() }));
-      scope.get('/stats', {
-        config: { crudOperation: 'list' },
-        schema: { querystring: z.object({ from: z.coerce.date(), to: z.coerce.date() }), response: { 200: stats } },
-      }, (request) => service.repository.statsByOrigin(request.query.from, request.query.to, serviceContext(request)));
-
-      // A route over a finder, for a query with its own parameters.
-      scope.get('/departing', {
-        config: { crudOperation: 'list' },
-        schema: { querystring: z.object({ from: z.coerce.date(), to: z.coerce.date() }), response: { 200: entity.schemas.listResult } },
-      }, (request) => service.findByScheduledDepartureBetween(request.query.from, request.query.to, serviceContext(request)));
-
-      scope.get('/board', {
-        config: { crudOperation: 'list' },
-        schema: { querystring: z.object({ origin: z.string().length(3) }), response: { 200: entity.schemas.listResult } },
-      }, (request) => service.departuresBoard(request.query.origin, serviceContext(request)));
-
-      scope.post('/:id/delay', {
-        config: { crudOperation: 'update' },
-        schema: { params: entity.schemas.params, body: z.object({ minutes: z.number().int().min(1).max(1440) }), response: { 200: flightRead } },
-      }, (request) => service.delayFlight(request.params.id, request.body.minutes, serviceContext(request)));
-
-      scope.post('/rotation', {
-        config: { crudOperation: 'create' },
-        schema: { body: z.object({ outbound: entity.schemas.create, inbound: entity.schemas.create }), response: { 201: z.array(flightRead) } },
-      }, async (request, reply) => {
-        const legs = await service.scheduleRotation(request.body.outbound, request.body.inbound, serviceContext(request));
-        reply.status(201);
-        return legs;
+    const details = z.intersection(flightRead, z.object({ originName: z.string(), destinationName: z.string(), aircraftModel: z.string() }));
+    scope.get('/:id/details', { config: { crudOperation: 'get' }, schema: { params: entity.schemas.params, response: { 200: details } } },
+      async (request) => {
+        const row = await service.repository.findDetails(request.params.id, serviceContext(request));
+        if (!row) throw new NotFoundError('flights not found');
+        return row;
       });
-    },
-  }),
-  { prefix: '/flights' },
-);
 
-// 6. Requests
-const call = async (method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, who?: string, payload?: object) => {
-  const response = await app.inject({ method, url, payload, headers: who ? { 'x-user': who } : {} });
-  console.log(`${method} ${url} as ${who ?? 'anonymous'} → ${response.statusCode} ${response.body}`);
-  return response;
-};
+    const stats = z.array(z.object({ originCode: z.string(), originName: z.string(), flights: z.number() }));
+    scope.get('/stats', {
+      config: { crudOperation: 'list' },
+      schema: { querystring: z.object({ from: z.coerce.date(), to: z.coerce.date() }), response: { 200: stats } },
+    }, (request) => service.repository.statsByOrigin(request.query.from, request.query.to, serviceContext(request)));
+
+    // A route over a finder, for a query with its own parameters.
+    scope.get('/departing', {
+      config: { crudOperation: 'list' },
+      schema: { querystring: z.object({ from: z.coerce.date(), to: z.coerce.date() }), response: { 200: entity.schemas.listResult } },
+    }, (request) => service.findByScheduledDepartureBetween(request.query.from, request.query.to, serviceContext(request)));
+
+    scope.get('/board', {
+      config: { crudOperation: 'list' },
+      schema: { querystring: z.object({ origin: z.string().length(3) }), response: { 200: entity.schemas.listResult } },
+    }, (request) => service.departuresBoard(request.query.origin, serviceContext(request)));
+
+    scope.post('/:id/delay', {
+      config: { crudOperation: 'update' },
+      schema: { params: entity.schemas.params, body: z.object({ minutes: z.number().int().min(1).max(1440) }), response: { 200: flightRead } },
+    }, (request) => service.delayFlight(request.params.id, request.body.minutes, serviceContext(request)));
+
+    scope.post('/rotation', {
+      config: { crudOperation: 'create' },
+      schema: { body: z.object({ outbound: entity.schemas.create, inbound: entity.schemas.create }), response: { 201: z.array(flightRead) } },
+    }, async (request, reply) => {
+      const legs = await service.scheduleRotation(request.body.outbound, request.body.inbound, serviceContext(request));
+      reply.status(201);
+      return legs;
+    });
+  },
+});
+await app.register(flightRoutes, { prefix: '/flights' });
+
+// 6. Requests. `flightRoutes.create`, `.update`, `.list`… call the generated routes with type-checked bodies;
+// `call` sends the custom routes from `extend`.
+const as = (who: string) => ({ headers: { 'x-user': who } });
+function show(response: Pick<LightMyRequestResponse, 'statusCode' | 'body' | 'raw'>): void {
+  const { method, url, headers } = response.raw.req;
+  console.log(`${method} ${url} as ${headers['x-user'] ?? 'anonymous'} → ${response.statusCode} ${response.body}`);
+}
+const call = async (method: 'GET' | 'POST', url: string, who: string, payload?: object) =>
+  show(await app.inject({ method, url, payload, ...as(who) }));
 const at = (time: string) => `2026-10-12T${time}:00.000Z`;
 const flight = (flightNumber: string, from: string, to: string, aircraftId: number, departs: string, arrives: string) => ({
-  flightNumber, originCode: from, destinationCode: to, aircraftId, scheduledDeparture: at(departs), scheduledArrival: at(arrives),
+  flightNumber, originCode: from, destinationCode: to, aircraftId,
+  scheduledDeparture: new Date(at(departs)), scheduledArrival: new Date(at(arrives)),
 });
 
-await call('POST', '/flights', 'ops', flight('LY001', 'TLV', 'JFK', 1, '06:00', '17:00'));
-await call('POST', '/flights', 'ops', flight('LY315', 'TLV', 'LHR', 2, '07:00', '12:00'));
-await call('POST', '/flights', 'ops', flight('LY316', 'LHR', 'TLV', 2, '13:00', '18:00'));
-await call('POST', '/flights', 'ops', flight('LY323', 'TLV', 'CDG', 3, '09:00', '13:30'));
+show(await flightRoutes.create(flight('LY001', 'TLV', 'JFK', 1, '06:00', '17:00'), as('ops')));
+show(await flightRoutes.create(flight('LY315', 'TLV', 'LHR', 2, '07:00', '12:00'), as('ops')));
+show(await flightRoutes.create(flight('LY316', 'LHR', 'TLV', 2, '13:00', '18:00'), as('ops')));
+show(await flightRoutes.create(flight('LY323', 'TLV', 'CDG', 3, '09:00', '13:30'), as('ops')));
 // Rejected by the role rule, the hook rules and database constraints.
-await call('POST', '/flights', 'passenger', flight('LY999', 'TLV', 'CDG', 3, '15:00', '19:00'));
-await call('POST', '/flights', 'ops', flight('LY400', 'TLV', 'CDG', 3, '15:00', '14:00'));
-await call('POST', '/flights', 'ops', flight('LY401', 'TLV', 'CDG', 99, '15:00', '19:00'));
-await call('POST', '/flights', 'ops', flight('LY402', 'LHR', 'CDG', 2, '10:00', '14:00'));
-await call('POST', '/flights', 'ops', flight('LY315', 'TLV', 'LHR', 3, '20:00', '23:00'));
+show(await flightRoutes.create(flight('LY999', 'TLV', 'CDG', 3, '15:00', '19:00'), as('passenger')));
+show(await flightRoutes.create(flight('LY400', 'TLV', 'CDG', 3, '15:00', '14:00'), as('ops')));
+show(await flightRoutes.create(flight('LY401', 'TLV', 'CDG', 99, '15:00', '19:00'), as('ops')));
+show(await flightRoutes.create(flight('LY402', 'LHR', 'CDG', 2, '10:00', '14:00'), as('ops')));
+show(await flightRoutes.create(flight('LY315', 'TLV', 'LHR', 3, '20:00', '23:00'), as('ops')));
 // The generated list accepts the filters declared in `filterable`.
 await call('GET', `/flights/departing?from=${at('06:30')}&to=${at('10:00')}`, 'passenger');
 await call('GET', '/flights/board?origin=TLV', 'passenger');
-await call('GET', '/flights?originCode__eq=TLV', 'passenger');
-await call('GET', '/flights?fields=id,flightNumber,scheduledDeparture', 'passenger');
+show(await flightRoutes.list({ originCode__eq: 'TLV' }, as('passenger')));
+show(await flightRoutes.list({ fields: ['id', 'flightNumber', 'scheduledDeparture'] }, as('passenger')));
 // Cursor paging: the first page's `nextCursor` fetches the page right after it.
-const firstPage = await call('GET', '/flights?limit=2&fields=id,flightNumber', 'passenger');
+const firstPage = await flightRoutes.list({ limit: 2, fields: ['id', 'flightNumber'] }, as('passenger'));
+show(firstPage);
 const { nextCursor } = z.object({ nextCursor: z.string() }).parse(firstPage.json());
-await call('GET', `/flights?limit=2&fields=id,flightNumber&cursor=${nextCursor}`, 'passenger');
-await call('PATCH', '/flights/2', 'ops', { status: 'departed' });
-await call('PATCH', '/flights/1', 'ops', { status: 'departed', actualDeparture: at('06:40') });
-await call('PATCH', '/flights/4', 'ops', { status: 'boarding' });
-await call('GET', '/flights?status__in=boarding,departed&fields=id,flightNumber,status', 'passenger');
+show(await flightRoutes.list({ limit: 2, fields: ['id', 'flightNumber'], cursor: nextCursor }, as('passenger')));
+show(await flightRoutes.update(2, { status: 'departed' }, as('ops')));
+show(await flightRoutes.update(1, { status: 'departed', actualDeparture: new Date(at('06:40')) }, as('ops')));
+show(await flightRoutes.update(4, { status: 'boarding' }, as('ops')));
+show(await flightRoutes.list({ status__in: ['boarding', 'departed'], fields: ['id', 'flightNumber', 'status'] }, as('passenger')));
 await call('GET', '/flights/delayed?minMinutes=15', 'passenger');
 await call('GET', '/flights/1/details', 'passenger');
 await call('GET', `/flights/stats?from=${at('00:00')}&to=2026-10-13T00:00:00.000Z`, 'passenger');
 await call('POST', '/flights/3/delay', 'ops', { minutes: 30 });
-await call('GET', '/flights/3?fields=id,flightNumber,scheduledDeparture,scheduledArrival', 'passenger');
+show(await flightRoutes.get(3, { fields: ['id', 'flightNumber', 'scheduledDeparture', 'scheduledArrival'] }, as('passenger')));
 // A departed flight can't be deleted. Soft-deleted rows disappear from custom queries too.
-await call('DELETE', '/flights/2', 'ops');
-await call('DELETE', '/flights/4', 'ops');
-await call('GET', '/flights?fields=id,flightNumber', 'passenger');
+show(await flightRoutes.delete(2, as('ops')));
+show(await flightRoutes.delete(4, as('ops')));
+show(await flightRoutes.list({ fields: ['id', 'flightNumber'] }, as('passenger')));
 await call('GET', `/flights/stats?from=${at('00:00')}&to=2026-10-13T00:00:00.000Z`, 'passenger');
 // The second leg clashes, so the first leg is rolled back too.
 await call('POST', '/flights/rotation', 'ops', {
   outbound: flight('LY500', 'TLV', 'CDG', 3, '18:00', '22:00'),
   inbound: flight('LY501', 'CDG', 'TLV', 2, '14:00', '16:00'),
 });
-await call('GET', '/flights?fields=id,flightNumber', 'passenger');
+show(await flightRoutes.list({ fields: ['id', 'flightNumber'] }, as('passenger')));
 
 await app.close();
 await client.close();

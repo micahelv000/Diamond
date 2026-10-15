@@ -2,9 +2,10 @@ import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import type { FastifyContextConfig, FastifyPluginAsync } from 'fastify';
 import { describe, expectTypeOf, test } from 'vitest';
-import { crudRoutes, type CrudRoutesOptions } from '../src/fastify/index.ts';
+import { crudRoutes, type CrudRoutesOptions, type CrudRoutesPlugin } from '../src/fastify/index.ts';
 import {
-  createRepository, createService, requireAuth, requireRole, type CrudService, type Database, type QueryOptions, type ServiceContext,
+  createRepository, createService, requireAuth, requireRole, type CreateInput, type CrudService, type Database, type QueryOptions,
+  type ServiceContext,
 } from '../src/index.ts';
 import { userEntity } from './fixtures/entities.ts';
 import type { TestUser } from './helpers/server.ts';
@@ -37,7 +38,8 @@ describe('crudRoutes types', () => {
         });
       },
     });
-    expectTypeOf(plugin).toEqualTypeOf<FastifyPluginAsync>();
+    expectTypeOf(plugin).toExtend<FastifyPluginAsync>();
+    expectTypeOf(plugin).toEqualTypeOf<CrudRoutesPlugin<typeof userEntity>>();
   });
 
   test('extend sees service.repository with its custom methods, and TCtx is still inferred', () => {
@@ -150,5 +152,39 @@ describe('crudRoutes types', () => {
     // @ts-expect-error -- a boolean, not a string
     crudRoutes({ service, transaction: 'off' });
     expectTypeOf(service.repository.db).toEqualTypeOf<Database>();
+  });
+
+  describe('route methods', () => {
+    const routes = crudRoutes({ service });
+
+    test('create needs the required fields, allows leaving out optional ones and rejects unknown ones', () => {
+      expectTypeOf(routes.create).parameter(0).toEqualTypeOf<CreateInput<typeof userEntity>>();
+      void routes.create({ email: 'a@x.io', name: 'Ann', orgId: 1 });
+      void routes.create({ email: 'a@x.io', name: 'Ann', orgId: 1, status: 'active' });
+      // @ts-expect-error -- `orgId` is required
+      void routes.create({ email: 'a@x.io', name: 'Ann' });
+      // @ts-expect-error -- not a column
+      void routes.create({ email: 'a@x.io', name: 'Ann', orgId: 1, nickname: 'A' });
+    });
+
+    test('update takes a partial and rejects omitted, hidden and primary key fields', () => {
+      void routes.update(1, { name: 'Bo' });
+      // @ts-expect-error -- `email` is in update.omit
+      void routes.update(1, { email: 'b@x.io' });
+      // @ts-expect-error -- `passwordHash` is hidden
+      void routes.update(1, { passwordHash: 'x' });
+      // @ts-expect-error -- the primary key can't be changed
+      void routes.update(1, { id: 2 });
+      // @ts-expect-error -- the id is a number
+      void routes.update('1', { name: 'Bo' });
+    });
+
+    test('list accepts declared filters and sortable columns only', () => {
+      void routes.list({ status__in: ['active'], createdAt__gte: new Date(), sort: ['-createdAt'], total: true });
+      // @ts-expect-error -- `email` is not filterable
+      void routes.list({ email__eq: 'a@x.io' });
+      // @ts-expect-error -- `email` is not sortable
+      void routes.list({ sort: ['email'] });
+    });
   });
 });

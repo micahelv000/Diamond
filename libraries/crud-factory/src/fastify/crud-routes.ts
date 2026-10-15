@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync, FastifyRequest, RouteOptions } from 'fastify';
+import type { FastifyInstance, FastifyPluginAsync, FastifyRequest, RouteOptions } from 'fastify';
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { z } from 'zod';
 import type { Operation } from '../auth/types.ts';
@@ -7,6 +7,7 @@ import type { CrudService, ServiceContext } from '../service/create-service.ts';
 import type { Database } from '../types.ts';
 import { createAuthorizationHook } from './authorization-hook.ts';
 import { crudErrorHandler, type ErrorBody } from './error-handler.ts';
+import { buildCalls, type CrudCalls } from './route-calls.ts';
 import type { CrudEntity, CrudRoutesOptions } from './options.ts';
 import { isOperationEnabled } from './utils.ts';
 
@@ -68,14 +69,21 @@ function wrapHandlerInTransaction(db: Database, routeOptions: RouteOptions): voi
   };
 }
 
+/**
+ * The plugin `crudRoutes` returns. Register it with a prefix, then call its routes directly with
+ * `create`, `update`, `get`, `list` and `delete`, whose bodies and queries are checked at compile time.
+ * They work once the plugin is registered; if it is registered more than once, they go to the last registration.
+ */
+export type CrudRoutesPlugin<E extends CrudEntity<E>> = FastifyPluginAsync & CrudCalls<E>;
+
 // How `S`, `E` and `TCtx` are inferred from the options: docs/type-inference.md.
 /**
  * Builds an encapsulated Fastify plugin with list, get, create, update and delete routes for one entity.
- * Register it with a prefix.
+ * Register it with a prefix, then call those routes with typed bodies and queries: `routes.update(1, { … })`.
  */
 export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudService<E, TCtx>>(
   options: CrudRoutesOptions<E, TCtx, S>,
-): FastifyPluginAsync {
+): CrudRoutesPlugin<E> {
   const { service, context, authorize, operations, hooks = {}, extend, logRequestBody = true, transaction = true } = options;
   const { schemas } = service.entity;
 
@@ -98,7 +106,11 @@ export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudSe
   const idOf = (request: FastifyRequest) => alreadyValidated(schemas.params, request.params).id;
   const route = (op: Operation) => ({ config: { crudOperation: op } });
 
-  return async function crudRoutesPlugin(instance) {
+  // The scope of the latest registration, which the typed route methods send requests to.
+  let registeredScope: FastifyInstance | undefined;
+
+  const plugin: FastifyPluginAsync = async function crudRoutesPlugin(instance) {
+    registeredScope = instance;
     // Added first so it sees every route below, including the `extend` ones.
     instance.addHook('onRoute', (routeOptions) => {
       assertAuthorizationChoice(routeOptions);
@@ -190,4 +202,6 @@ export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudSe
 
     await extend?.(instance.withTypeProvider<ZodTypeProvider>(), { service, entity: service.entity, serviceContext });
   };
+
+  return Object.assign(plugin, buildCalls<E>(service.entity.name, () => registeredScope));
 }

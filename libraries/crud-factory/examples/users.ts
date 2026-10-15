@@ -4,7 +4,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
 import { integer, pgTable, text } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
-import Fastify from 'fastify';
+import Fastify, { type LightMyRequestResponse } from 'fastify';
 import { createRepository, createService, defineEntity, requireAuth, requireRole, UnauthorizedError } from '@diamond/crud-factory';
 import { crudRoutes } from '@diamond/crud-factory/fastify';
 
@@ -32,12 +32,12 @@ const db = drizzle({ client });
 
 // 2. Entities: what is hidden, writable, filterable and sortable.
 const userEntity = defineEntity(users, {
-  primaryKey:  'id',
+  primaryKey: 'id',
   hidden: ['passwordHash'],
   create: { omit: ['id'] },
   update: { omit: ['email', 'orgId'] },
   filterable: { name: ['ilike'] },
-  sortable: ['name','email'],
+  sortable: ['name', 'email'],
   defaultSort: 'email',
 });
 // `orgId` is the tenant column: clients can neither set it on create nor move a row with a patch.
@@ -81,37 +81,34 @@ app.addHook('onRequest', async (request) => {
 });
 
 const context = (request: { user: Caller | null }) => request.user ?? undefined;
-await app.register(
-  crudRoutes({ service: userService, context, authorize: { '*': requireAuth, create: requireRole('admin') } }),
-  { prefix: '/users' },
-);
-await app.register(
-  crudRoutes({
-    service: postService,
-    context,
-    // A SQL rule scopes list/get/update/delete: callers only ever see and change their own org's posts.
-    // (Create has no rows to filter; the hook above stamps the org instead.)
-    authorize: { '*': ({ ctx }) => (ctx ? eq(posts.orgId, ctx.orgId) : false) },
-  }),
-  { prefix: '/posts' },
-);
+const userRoutes = crudRoutes({ service: userService, context, authorize: { '*': requireAuth, create: requireRole('admin') } });
+const postRoutes = crudRoutes({
+  service: postService,
+  context,
+  authorize: { '*': ({ ctx }) => (ctx ? eq(posts.orgId, ctx.orgId) : false) },
+});
+await app.register(userRoutes, { prefix: '/users' });
+await app.register(postRoutes, { prefix: '/posts' });
 
-// 5. A few requests.
-const call = async (method: 'GET' | 'POST' | 'PATCH', url: string, who?: string, payload?: object) => {
-  const response = await app.inject({ method, url, payload, headers: who ? { 'x-user': who } : {} });
-  console.log(`${method} ${url} as ${who ?? 'anonymous'} → ${response.statusCode}`, response.body || '');
-};
+// 5. A few requests. `userRoutes.create`, `postRoutes.update`… check bodies at compile time, so leaving out
+// a required field like `orgId` is a type error. The last request bypasses the types on purpose.
+const as = (who: string) => ({ headers: { 'x-user': who } });
+function show(response: LightMyRequestResponse): void {
+  const { method, url, headers } = response.raw.req;
+  console.log(`${method} ${url} as ${headers['x-user'] ?? 'anonymous'} → ${response.statusCode}`, response.body);
+}
 
-await call('GET', '/users',);
-await call('POST', '/users', 'member', { email: 'ann@x.io', name: 'Ann', orgId: 10 });
-await call('POST', '/users', 'admin', { email: 'ann@x.io', name: 'Ann', orgId: 10 });
-await call('POST', '/users', 'admin', { email: 'ann@x.io', name: 'Ann', orgId: 10 });
-await call('GET', '/users?name__ilike=an&fields=id,name', 'member');
-await call('POST', '/posts', 'admin', { title: 'Org 10 roadmap' });
-await call('POST', '/posts', 'member', { title: 'Org 20 notes' });
-await call('GET', '/posts?sort=title', 'member');
-await call('PATCH', '/posts/1', 'member', { title: 'Hijacked' });
-await call('PATCH', '/posts/2', 'member', { title: 'Moved', orgId: 10 });
+show(await userRoutes.list()); // 401: no user
+show(await userRoutes.create({ email: 'ann@x.io', name: 'Ann', orgId: '2' }, as('member'))); // 403: admins only
+show(await userRoutes.create({ email: 'ann@x.io', name: 'Ann', orgId: 10 }, as('admin')));
+show(await userRoutes.create({ email: 'ann@x.io', name: 'Ann', orgId: 10 }, as('admin'))); // 409: email taken
+show(await userRoutes.list({ name__ilike: 'an', fields: ['id', 'name'] }, as('member')));
+show(await postRoutes.create({ title: 'Org 10 roadmap' }, as('admin')));
+show(await postRoutes.create({ title: 'Org 20 notes' }, as('member')));
+show(await postRoutes.list({ sort: ['title'] }, as('member'))); // only org 20's post
+show(await postRoutes.update(1, { title: 'Hijacked' }, as('member'))); // 404: post 1 belongs to org 10
+// `orgId` is omitted from updates, so the types reject it. Sent raw, the route drops it: the post stays in org 20.
+show(await app.inject({ method: 'PATCH', url: '/posts/2', payload: { title: 'Moved', orgId: 10 }, ...as('member') }));
 
 await app.close();
 await client.close();

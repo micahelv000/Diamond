@@ -60,7 +60,9 @@ const productEntity = defineEntity(products, {
 
 // 3. The app. No `authorize`, so the routes are open; this example is only about listing.
 const app = Fastify();
-await app.register(crudRoutes({ service: createService(createRepository(db, productEntity)) }), { prefix: '/products' });
+const productRoutes = crudRoutes({ service: createService(createRepository(db, productEntity)) });
+await app.register(productRoutes, { prefix: '/products' });
+// `productRoutes.list` calls the list route with a query object checked against `filterable` and `sortable`.
 
 // 4. Helpers that print one readable line per request.
 interface ProductRow {
@@ -94,12 +96,23 @@ function summarize(body: ListBody): string {
   return `[${names}] limit=${body.limit} offset=${body.offset}${total} nextCursor=${cursor}`;
 }
 
-async function list(query: string): Promise<ListBody> {
-  const url = query ? `/products?${query}` : '/products';
-  const response = await app.inject({ method: 'GET', url });
-  const body: ListBody = response.json();
-  console.log(`GET ${url} → ${response.statusCode}  ${summarize(body)}`);
+interface ListResponse {
+  statusCode: number;
+  raw: { req: { url?: string } };
+  json(): ListBody;
+}
+
+// Prints the request URL, the status and a summary of the page, then returns the body.
+async function list(pending: Promise<ListResponse>): Promise<ListBody> {
+  const response = await pending;
+  const body = response.json();
+  console.log(`GET ${response.raw.req.url} → ${response.statusCode}  ${summarize(body)}`);
   return body;
+}
+
+// For requests the types would reject: these deliberately bypass them to show the route's own checks.
+function rawList(query: string): Promise<ListResponse> {
+  return app.inject({ method: 'GET', url: `/products?${query}` });
 }
 
 function section(title: string): void {
@@ -108,57 +121,59 @@ function section(title: string): void {
 
 // 5. URL filters.
 section('URL filters');
-await list('category__eq=book');
-await list('category__in=game,toy');
-await list('category__in=game&category__in=toy'); // a repeated parameter works like a comma list
-await list('name__ilike=o');
-await list('price__gte=20&price__lte=30');
-await list('inStock__eq=false');
-await list('releasedAt__gte=2026-03-01T00:00:00Z&releasedAt__lte=2026-05-31T23:59:59Z');
-await list('category__eq=game&inStock__eq=true&price__lte=25'); // filters combine with AND
-await list('category__eq='); // a blank value means "no filter"
+await list(productRoutes.list({ category__eq: 'book' }));
+await list(productRoutes.list({ category__in: ['game', 'toy'] }));
+await list(rawList('category__in=game&category__in=toy')); // a repeated parameter works like a comma list
+await list(productRoutes.list({ name__ilike: 'o' }));
+await list(productRoutes.list({ price__gte: 20, price__lte: 30 }));
+await list(productRoutes.list({ inStock__eq: false }));
+await list(productRoutes.list({ releasedAt__gte: new Date('2026-03-01T00:00:00Z'), releasedAt__lte: new Date('2026-05-31T23:59:59Z') }));
+await list(productRoutes.list({ category__eq: 'game', inStock__eq: true, price__lte: 25 })); // filters combine with AND
+await list(rawList('category__eq=')); // a blank value means "no filter"
 
 section('Rejected filters (400)');
-await list('color__eq=red'); // not a column in `filterable`
-await list('price__eq=25'); // `price` doesn't allow `eq`
-await list('category__eq=car'); // not a valid enum value
-await list('releasedAt__gte=2026-02-30T00:00:00Z'); // not a real date
-await list('price__gte=cheap'); // not a number
+await list(rawList('color__eq=red')); // not a column in `filterable`
+await list(rawList('price__eq=25')); // `price` doesn't allow `eq`
+await list(rawList('category__eq=car')); // not a valid enum value
+await list(rawList('releasedAt__gte=2026-02-30T00:00:00Z')); // not a real date
+await list(rawList('price__gte=cheap')); // not a number
 
 // 6. Sorting. `-` means descending; ties are broken by the primary key, so the order is always stable.
 section('Sorting');
-await list('sort=-price');
-await list('sort=price,name');
-await list('sort=category'); // 400: `category` isn't in `sortable`
+await list(productRoutes.list({ sort: ['-price'] }));
+await list(productRoutes.list({ sort: ['price', 'name'] }));
+await list(rawList('sort=category')); // 400: `category` isn't in `sortable`
 
 // 7. Offset paging: `limit` rows after skipping `offset` rows.
 section('Offset paging');
-await list(''); // the default page size is 4
-await list('limit=2&offset=2');
-await list('limit=50'); // capped at maxLimit (5)
-await list('limit=3&total=true'); // `total` counts every matching row, not just this page
+await list(productRoutes.list()); // the default page size is 4
+await list(productRoutes.list({ limit: 2, offset: 2 }));
+await list(productRoutes.list({ limit: 50 })); // capped at maxLimit (5)
+await list(productRoutes.list({ limit: 3, total: true })); // `total` counts every matching row, not just this page
 
 // 8. Cursor paging: follow `nextCursor` until it is null. Each page starts right after the previous
 // one, so rows are never repeated or skipped, even with ties or new rows added between requests.
 section('Cursor paging: every page, sorted by price');
-let query = 'sort=price&limit=4&fields=name,price';
-let page = await list(query);
+const byPrice = (cursor?: string) => productRoutes.list({ sort: ['price'], limit: 4, fields: ['name', 'price'], cursor });
+let page = await list(byPrice());
 while (page.nextCursor) {
-  page = await list(`${query}&cursor=${page.nextCursor}`);
+  page = await list(byPrice(page.nextCursor));
 }
 
 section('Cursor paging with filters');
-query = 'category__in=game,toy&sort=-price&limit=3&fields=name,price';
-page = await list(query);
+const gamesAndToys = (cursor?: string) =>
+  productRoutes.list({ category__in: ['game', 'toy'], sort: ['-price'], limit: 3, fields: ['name', 'price'], cursor });
+page = await list(gamesAndToys());
 while (page.nextCursor) {
-  page = await list(`${query}&cursor=${page.nextCursor}`);
+  page = await list(gamesAndToys(page.nextCursor));
 }
 
 section('Rejected cursors (400)');
-const first = await list('sort=price&limit=2');
-await list(`sort=-price&limit=2&cursor=${first.nextCursor}`); // made for a different sort
-await list(`sort=price&limit=2&offset=2&cursor=${first.nextCursor}`); // cursor and offset together
-await list('sort=price&limit=2&cursor=not-a-real-cursor');
+const first = await list(productRoutes.list({ sort: ['price'], limit: 2 }));
+const cursor = first.nextCursor ?? undefined;
+await list(productRoutes.list({ sort: ['-price'], limit: 2, cursor })); // made for a different sort
+await list(productRoutes.list({ sort: ['price'], limit: 2, offset: 2, cursor })); // cursor and offset together
+await list(productRoutes.list({ sort: ['price'], limit: 2, cursor: 'not-a-real-cursor' }));
 
 await app.close();
 await client.close();
