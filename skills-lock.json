@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "skills": {
+    "drizzle-best-practices": {
+      "source": "honra-io/drizzle-best-practices",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "c723c157f3af98486d64dea4a1c1250ca0c57e1d0cdd426a6c301f844dcdbaed"
+    },
+    "drizzle-orm": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": "drizzle-orm/SKILL.md",
+      "computedHash": "8c96d6e1bbfaad8453371b4727f2bfa73febe9686c75997fd502e38981da211f"
+    },
+    "fastify-best-practise": {
+      "source": "thecodepace/fastify-skills",
+      "sourceType": "github",
+      "skillPath": "skills/fastify-best-practise/SKILL.md",
+      "computedHash": "68258839d8ad9ff447c29d1351b23c613638983d51b8a5678677fb4105fc6df2"
+    },
+    "project-architect": {
+      "source": "ersinkoc/project-architect",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "9f32e40015069f39c7f5325cf815d7454b52233660df9b2b864bcf6724967375"
+    },
+    "typescript-best-practices": {
+      "source": "dhanji4U/skills",
+      "sourceType": "github",
+      "skillPath": "skills/quality/typescript-best-practices/SKILL.md",
+      "computedHash": "d276593e4408df246d3b979921b8bbbff298eae47641735f3a77279cf34a727d"
+    },
+    "vitest": {
+      "source": "antfu/skills",
+      "sourceType": "github",
+      "skillPath": "skills/vitest/SKILL.md",
+      "computedHash": "21af2b13d47d31f3094b61c0f41abc8d6a7eed0df3c9a4029ea671f6978b7209"
+    }
+  }
+}

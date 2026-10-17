@@ -1,0 +1,97 @@
+import type { SQL } from 'drizzle-orm';
+import type {
+  AnyEntity,
+  Database,
+  Insert,
+  FindByIdOptions,
+  ListOptions,
+  ListResult,
+  NoOverride,
+  Patch,
+  PrimaryKeyValue,
+  QueryOptions,
+  RepositoryFinders,
+  Row,
+  SortSpec,
+  VisibleKey,
+} from '../types.ts';
+
+/** The tools `.extend()` provides for writing custom queries. */
+export interface RepositoryInternals<E extends AnyEntity> {
+  /**
+   * The way to reach the database from a custom query. Pass the caller's options, and the returned
+   * `db`, `where` and `run` apply its transaction, scope and logger, plus soft delete, the same way
+   * the built-in methods do.
+   */
+  scoped(options?: QueryOptions): ScopedQuery;
+  /** The entity's drizzle table, for building queries and referencing its columns. */
+  table: E['table'];
+  /**
+   * The table's visible columns, ready to spread into a `select`.
+   * Pass column names to pick only some of them.
+   */
+  project<K extends VisibleKey<E> = VisibleKey<E>>(keys?: readonly K[]): Pick<E['table']['_']['columns'], K>;
+  /**
+   * The ORDER BY clauses for `sort`, or for the entity's `defaultSort` when omitted, always ending with
+   * the primary key. Only visible columns can be sorted on; any other key throws `BadRequestError`.
+   */
+  orderBy(sort?: readonly SortSpec<E>[]): SQL[];
+}
+
+/** The database tools for one call, from `scoped(options)`. */
+export interface ScopedQuery {
+  /** The database to build the query on: the caller's `tx` when given, so the query joins its transaction. */
+  db: Database;
+  /**
+   * The full WHERE condition: rows that are not soft-deleted and match the caller's `scope`, ANDed
+   * with `condition` when given.
+   */
+  where(condition?: SQL): SQL | undefined;
+  /**
+   * Runs a query and returns its result, mapping database errors like the built-in methods do.
+   * When the caller gave a `log`, it logs the SQL text (never the values) and duration at `debug`.
+   */
+  run<R>(query: RunnableQuery<R>): Promise<R>;
+}
+
+/** A drizzle query builder that can be awaited and can print its SQL. */
+export type RunnableQuery<R> = PromiseLike<R> & { toSQL(): { sql: string } };
+
+/** The built-in repository: the entity, its database, the CRUD methods and the generated finders, without `.extend()`. */
+export type CrudRepositoryBase<E extends AnyEntity> = CrudRepositoryMethods<E> & RepositoryFinders<E>;
+
+/** The entity, its database and the CRUD methods every repository has. */
+export interface CrudRepositoryMethods<E extends AnyEntity> {
+  /** The entity this repository was created for. */
+  readonly entity: E;
+  /** The database this repository was created with. Use it to open your own transactions and pass `tx` to each call. */
+  readonly db: Database;
+  /**
+   * Lists rows. `where` takes a typed filter object or a raw `SQL` chunk. Results are sorted by `sort`
+   * or `defaultSort`, always ending with the primary key.
+   */
+  findMany<K extends VisibleKey<E> = VisibleKey<E>>(options?: ListOptions<E, K> & QueryOptions): Promise<ListResult<E, K>>;
+  /** Returns the row with this id, or `null` if none matches. */
+  findById<K extends VisibleKey<E> = VisibleKey<E>>(
+    id: PrimaryKeyValue<E>,
+    options?: FindByIdOptions<K> & QueryOptions,
+  ): Promise<Pick<Row<E>, K> | null>;
+  /** Inserts a row and returns it. */
+  create(input: Insert<E>, options?: QueryOptions): Promise<Row<E>>;
+  /** Updates a row and returns it. Throws `NotFoundError` when no row matches the id and scope. */
+  update(id: PrimaryKeyValue<E>, patch: Patch<E>, options?: QueryOptions): Promise<Row<E>>;
+  /** Deletes a row, or soft-deletes it when configured, and returns it. Throws `NotFoundError` when no row matches. */
+  delete(id: PrimaryKeyValue<E>, options?: QueryOptions): Promise<Row<E>>;
+}
+
+/** A repository from `createRepository`: the built-in methods plus `X`, the methods added with `.extend()` so far. */
+export type CrudRepository<E extends AnyEntity, X extends object = {}> = CrudRepositoryBase<E> &
+  X & {
+    /**
+     * Returns a new repository with the given custom methods added, keeping all earlier ones.
+     * Reusing a built-in method name is a compile error.
+     */
+    extend<Y extends object>(
+      factory: (internals: RepositoryInternals<E>) => Y & NoOverride<keyof CrudRepositoryBase<E> | 'extend'>,
+    ): CrudRepository<E, X & Y>;
+  };
