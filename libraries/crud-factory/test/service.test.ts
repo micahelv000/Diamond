@@ -1,6 +1,6 @@
 import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, test } from 'vitest';
-import { ConflictError, createRepository, createService, NotFoundError, type Logger, type ServiceContext } from '../src/index.ts';
+import { ConflictError, createRepository, createService, NotFoundError, type ServiceContext } from '../src/index.ts';
 import { postEntity, userEntity } from './fixtures/entities.ts';
 import { posts, users } from './fixtures/schema.ts';
 import { useTestDb } from './helpers/db.ts';
@@ -10,15 +10,6 @@ const { db } = useTestDb();
 interface Auth {
   userId: number;
   orgId: number;
-}
-
-function fakeLogger() {
-  const entries: { level: 'debug' | 'warn'; details: object; message: string | undefined }[] = [];
-  const log: Logger = {
-    debug: (details, message) => entries.push({ level: 'debug', details, message }),
-    warn: (details, message) => entries.push({ level: 'warn', details, message }),
-  };
-  return { log, entries };
 }
 
 const service = createService<typeof userEntity, Auth>(createRepository(db, userEntity), {
@@ -34,8 +25,7 @@ beforeEach(async () => {
 
 describe('createService', () => {
   test('hooks transform input before the repository call', async () => {
-    const { log } = fakeLogger();
-    const context = { log, auth: { userId: 1, orgId: 7 } };
+    const context = { auth: { userId: 1, orgId: 7 } };
     const created = await service.create({ email: 'a@b.c', name: 'A', orgId: 1 }, context);
     expect(created.orgId).toBe(7);
     const [stored] = await db.select({ passwordHash: users.passwordHash }).from(users);
@@ -43,33 +33,6 @@ describe('createService', () => {
 
     const updated = await service.update(created.id, { name: '  Trimmed  ' }, context);
     expect(updated.name).toBe('Trimmed');
-  });
-
-  test('logs entity, op, id and duration at debug, never values', async () => {
-    const { log, entries } = fakeLogger();
-    const created = await service.create({ email: 'secret@b.c', name: 'A', orgId: 1 }, { log });
-    await service.findById(created.id, {}, { log });
-    const serviceLines = entries.filter((entry) => entry.message === 'repository call');
-    expect(serviceLines.map((entry) => entry.details)).toEqual([
-      { entity: 'users', op: 'create', id: undefined, durationMs: expect.any(Number) },
-      { entity: 'users', op: 'findById', id: created.id, durationMs: expect.any(Number) },
-    ]);
-    // The hook's `passwordHash: 'hashed'` and the email reach the database but never the log.
-    expect(JSON.stringify(entries)).not.toContain('secret@b.c');
-    expect(JSON.stringify(entries)).not.toContain('hashed');
-  });
-
-  test('passes context.log down so the repository logs each SQL statement without its values', async () => {
-    const { log, entries } = fakeLogger();
-    await service.create({ email: 'sql@b.c', name: 'A', orgId: 1 }, { log });
-    const sqlLines = entries.filter((entry) => entry.message === 'sql');
-    expect(sqlLines).toEqual([
-      { level: 'debug', message: 'sql', details: { entity: 'users', sql: expect.stringContaining('insert into "users"'), durationMs: expect.any(Number) } },
-    ]);
-    // Values are sent as parameters ($1, $2 …), so the statement text never contains them.
-    expect(JSON.stringify(sqlLines)).not.toContain('sql@b.c');
-    // The SQL line is written before the service's own line for the same call.
-    expect(entries.map((entry) => entry.message)).toEqual(['sql', 'repository call']);
   });
 
   test('exposes the repository, with its extend methods, as service.repository', async () => {
@@ -85,12 +48,10 @@ describe('createService', () => {
     expect(await extended.repository.emails()).toEqual([{ email: 'repo@b.c' }]);
   });
 
-  test('logs client errors (4xx) at debug with their code and passes context.scope through', async () => {
-    const { log, entries } = fakeLogger();
-    const created = await service.create({ email: 'a@b.c', name: 'A', orgId: 1 }, { log });
+  test('passes context.scope through, so a row outside it is not found', async () => {
+    const created = await service.create({ email: 'a@b.c', name: 'A', orgId: 1 }, {});
     const scope = eq(users.orgId, 99);
-    await expect(service.delete(created.id, { log, scope })).rejects.toBeInstanceOf(NotFoundError);
-    expect(entries.at(-1)).toMatchObject({ level: 'debug', details: { entity: 'users', op: 'delete', id: created.id, code: 'NOT_FOUND' } });
+    await expect(service.delete(created.id, { scope })).rejects.toBeInstanceOf(NotFoundError);
   });
 });
 
@@ -100,34 +61,31 @@ describe('service.extend', () => {
   }));
 
   test('adds methods that run through the real service and repository, hooks included', async () => {
-    const { log } = fakeLogger();
-    const created = await extended.create({ email: 'x@b.c', name: 'A', orgId: 1 }, { log });
+    const created = await extended.create({ email: 'x@b.c', name: 'A', orgId: 1 }, {});
     // `beforeUpdate` trims the name, so the custom method went through `base.update`.
-    expect(await extended.rename(created.id, '  Renamed  ', { log })).toMatchObject({ id: created.id, name: 'Renamed' });
+    expect(await extended.rename(created.id, '  Renamed  ', {})).toMatchObject({ id: created.id, name: 'Renamed' });
   });
 
   test('keeps the built-ins, entity and repository, and leaves the original service unchanged', async () => {
-    const { log } = fakeLogger();
     expect(extended.entity).toBe(service.entity);
     expect(extended.repository).toBe(service.repository);
     expect(extended.findMany).toBe(service.findMany);
     expect('rename' in service).toBe(false);
-    const created = await extended.create({ email: 'y@b.c', name: 'B', orgId: 1 }, { log, auth: { userId: 1, orgId: 7 } });
+    const created = await extended.create({ email: 'y@b.c', name: 'B', orgId: 1 }, { auth: { userId: 1, orgId: 7 } });
     expect(created.orgId).toBe(7);
-    expect((await extended.findMany({}, { log })).items).toHaveLength(1);
+    expect((await extended.findMany({}, {})).items).toHaveLength(1);
   });
 
   test('chained extends both work, and the second sees the first through base', async () => {
-    const { log } = fakeLogger();
     const chained = extended.extend((base) => ({
       renameTwice: async (id: number, context: ServiceContext<Auth>) => {
         await base.rename(id, 'First', context);
         return base.rename(id, 'Second', context);
       },
     }));
-    const created = await chained.create({ email: 'z@b.c', name: 'C', orgId: 1 }, { log });
-    expect((await chained.rename(created.id, 'Once', { log })).name).toBe('Once');
-    expect((await chained.renameTwice(created.id, { log })).name).toBe('Second');
+    const created = await chained.create({ email: 'z@b.c', name: 'C', orgId: 1 }, {});
+    expect((await chained.rename(created.id, 'Once', {})).name).toBe('Once');
+    expect((await chained.renameTwice(created.id, {})).name).toBe('Second');
   });
 
   test('a unique violation in a custom method is a ConflictError', async () => {
@@ -142,11 +100,10 @@ describe('service.extend', () => {
 });
 
 describe('write hooks', () => {
-  /** A service whose hooks record their calls in `events`; its logger records each SQL statement there too. */
+  /** A service whose hooks record their calls in `events`. */
   function recordingService() {
     const events: string[] = [];
     const calls: Record<string, unknown> = {};
-    const log: Logger = { debug: (_details, message) => message === 'sql' && events.push('sql'), warn: () => undefined };
     const recorded = createService<typeof userEntity, Auth>(createRepository(db, userEntity), {
       hooks: {
         beforeCreate: ({ input }) => {
@@ -176,14 +133,14 @@ describe('write hooks', () => {
         },
       },
     });
-    return { events, calls, recorded, context: { log, auth: { userId: 1, orgId: 7 } } };
+    return { events, calls, recorded, context: { auth: { userId: 1, orgId: 7 } } };
   }
 
   test('afterCreate runs after the insert with the saved row and the client input', async () => {
     const { events, calls, recorded, context } = recordingService();
     const input = { email: 'a@b.c', name: 'A', orgId: 1 };
     const row = await recorded.create(input, context);
-    expect(events).toEqual(['beforeCreate', 'sql', 'afterCreate']);
+    expect(events).toEqual(['beforeCreate', 'afterCreate']);
     expect(row.id).toEqual(expect.any(Number));
     expect(calls.afterCreate).toEqual({ row, input, context });
   });
@@ -193,7 +150,7 @@ describe('write hooks', () => {
     const created = await recorded.create({ email: 'a@b.c', name: 'A', orgId: 1 }, context);
     events.length = 0;
     const row = await recorded.update(created.id, { name: 'B' }, context);
-    expect(events).toEqual(['beforeUpdate', 'sql', 'afterUpdate']);
+    expect(events).toEqual(['beforeUpdate', 'afterUpdate']);
     expect(row.name).toBe('B');
     expect(calls.afterUpdate).toEqual({ id: created.id, row, patch: { name: 'B' }, context });
   });
@@ -203,8 +160,7 @@ describe('write hooks', () => {
     const created = await recorded.create({ email: 'a@b.c', name: 'A', orgId: 1 }, context);
     events.length = 0;
     const row = await recorded.delete(created.id, context);
-    // The hook's own read is not logged because it gets no `log`.
-    expect(events).toEqual(['beforeDelete', 'sql', 'afterDelete']);
+    expect(events).toEqual(['beforeDelete', 'afterDelete']);
     expect(row).toMatchObject({ id: created.id, email: 'a@b.c' });
     expect(row).not.toHaveProperty('deletedAt');
     expect(calls.afterDelete).toEqual({ id: created.id, row, context });
@@ -226,10 +182,9 @@ describe('write hooks', () => {
     const postService = createService(createRepository(db, postEntity), {
       hooks: { beforeCreate: ({ input }) => ({ ...input, orgId: 1 }), afterDelete: ({ row }) => void deleted.push(row) },
     });
-    const { log } = fakeLogger();
-    const author = await service.create({ email: 'a@b.c', name: 'A', orgId: 1 }, { log });
-    const post = await postService.create({ authorId: author.id, title: 'Hello' }, { log });
-    expect(await postService.delete(post.id, { log })).toEqual(post);
+    const author = await service.create({ email: 'a@b.c', name: 'A', orgId: 1 }, {});
+    const post = await postService.create({ authorId: author.id, title: 'Hello' }, {});
+    expect(await postService.delete(post.id, {})).toEqual(post);
     expect(deleted).toEqual([post]);
     expect(await db.select().from(posts)).toEqual([]);
   });
@@ -242,6 +197,6 @@ describe('write hooks', () => {
     const created = await extended.create({ email: 'a@b.c', name: 'A', orgId: 1 }, context);
     events.length = 0;
     await extended.rename(created.id, 'Renamed', context);
-    expect(events).toEqual(['beforeUpdate', 'sql', 'afterUpdate']);
+    expect(events).toEqual(['beforeUpdate', 'afterUpdate']);
   });
 });

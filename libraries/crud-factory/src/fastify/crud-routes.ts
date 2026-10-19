@@ -25,8 +25,7 @@ declare module 'fastify' {
   }
 }
 
-// Thrown in place of `reply.send()` inside a transactional handler. Named so the 500 log, which leaves out
-// error messages, still says what went wrong.
+// Thrown in place of `reply.send()` inside a transactional handler, so the error says what went wrong.
 class ReplySentInTransactionError extends Error {
   override name = 'ReplySentInTransactionError';
 }
@@ -89,14 +88,13 @@ export type CrudRoutesPlugin<E extends CrudEntity<E>> = FastifyPluginAsync & Cru
 export function crudRoutes<E extends CrudEntity<E>, TContext = undefined, S = CrudService<E, TContext>>(
   options: CrudRoutesOptions<E, TContext, S>,
 ): CrudRoutesPlugin<E> {
-  const { service, context, authorize, operations, hooks = {}, extend, logRequestBody = true, transaction = true } = options;
+  const { service, context, authorize, operations, hooks = {}, extend, transaction = true } = options;
   const { schemas } = service.entity;
 
   const serviceContext = (request: FastifyRequest): ServiceContext<TContext> => {
     const tx = request.crudTx ?? undefined;
     if (request.crudContext) {
       return {
-        log: request.log,
         // Only this scope's preHandler sets `crudContext`, using this scope's `context` mapper,
         // so `auth` is a `TContext`.
         auth: request.crudContext.auth as TContext | undefined,
@@ -104,7 +102,7 @@ export function crudRoutes<E extends CrudEntity<E>, TContext = undefined, S = Cr
         tx,
       };
     }
-    if (request.routeOptions.config.crudPublic === true) return { log: request.log, tx };
+    if (request.routeOptions.config.crudPublic === true) return { tx };
     // No rule ran, for example on a route outside this scope, so fail rather than run without a row scope.
     throw new Error(`${request.routeOptions.url ?? request.url}: no authorize check ran for this route`);
   };
@@ -132,13 +130,6 @@ export function crudRoutes<E extends CrudEntity<E>, TContext = undefined, S = Cr
     });
     if (!instance.hasRequestDecorator('crudContext')) instance.decorateRequest('crudContext', null);
     if (!instance.hasRequestDecorator('crudTx')) instance.decorateRequest('crudTx', null);
-    // Added before authorization so denied requests are logged too. It runs after validation,
-    // so it logs the parsed body.
-    if (logRequestBody) {
-      instance.addHook('preHandler', async (request) => {
-        if (request.body !== undefined) request.log.debug({ body: request.body }, 'request body');
-      });
-    }
     instance.addHook('preHandler', createAuthorizationHook({ context, authorize }));
     const addHook = instance.addHook.bind(instance) as (hookName: string, hook: FastifyHook) => void;
     for (const [hookName, hookOrHooks] of Object.entries(hooks)) {
@@ -147,12 +138,6 @@ export function crudRoutes<E extends CrudEntity<E>, TContext = undefined, S = Cr
           return Reflect.apply(userHook, this, hookArguments);
         });
       }
-    }
-
-    const where = instance.prefix || '/';
-    if (!authorize) instance.log.warn(`${where} routes registered without authorize`);
-    if (authorize && !context) {
-      instance.log.warn(`${where} routes have authorize but no context: every request is anonymous (401)`);
     }
 
     if (isOperationEnabled('list', operations)) {

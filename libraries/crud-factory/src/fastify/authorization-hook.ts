@@ -62,8 +62,6 @@ export function createAuthorizationHook<TContext>(options: AuthorizationHookOpti
       id: paramId(request.params),
       input: op === 'create' || op === 'update' ? request.body : undefined,
     });
-    // Logs only the outcome, because the user and the body may hold personal data.
-    request.log.debug({ op, decision: result.kind, auth}, 'authorization');
 
     switch (result.kind) {
       case 'unauthenticated':

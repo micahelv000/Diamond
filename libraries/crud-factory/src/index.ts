@@ -9,7 +9,7 @@ export {
   UnauthorizedError,
 } from './errors.ts';
 export { createRepository } from './repository/create-repository.ts';
-export type { CrudRepository, CrudRepositoryBase, CrudRepositoryMethods, RepositoryInternals, RunnableQuery, ScopedQuery } from './repository/types.ts';
+export type { CrudRepository, CrudRepositoryBase, CrudRepositoryMethods, RepositoryInternals, ScopedQuery } from './repository/types.ts';
 export { createService } from './service/create-service.ts';
 export type {
   CrudService,
@@ -38,7 +38,6 @@ export type {
   ListOptions,
   ListResponse,
   ListResult,
-  Logger,
   PaginationConfig,
   Patch,
   PrimaryKeyValue,

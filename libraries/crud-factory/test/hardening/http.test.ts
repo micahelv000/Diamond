@@ -52,7 +52,6 @@ const app = useServer({
         service: userService,
         context: (request) => request.user ?? undefined,
         authorize: { '*': requireAuth },
-        logRequestBody: false,
         extend: (scope) => {
           scope.get('/boom', { config: { crudOperation: 'list' } }, () => {
             throw new Error('connect failed: password=hunter2');

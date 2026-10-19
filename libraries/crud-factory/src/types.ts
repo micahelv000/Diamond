@@ -5,12 +5,6 @@ import type { z } from 'zod';
 /** Any async Postgres drizzle database. A transaction also counts as one. */
 export type Database = PgAsyncDatabase<PgQueryResultHKT, AnyRelations>;
 
-/** The logger methods the library uses. Pino and Fastify's request logger both fit. */
-export interface Logger {
-  debug(details: object, message?: string): void;
-  warn(details: object, message?: string): void;
-}
-
 // ── Entity config ──
 
 /** The filter operators a column can allow in `filterable`. */
@@ -247,11 +241,6 @@ export interface QueryOptions {
    * as if they don't exist. Routes set it from your `authorize` rules.
    */
   scope?: SQL;
-  /**
-   * A logger for each SQL statement this call runs, at `debug` level, with its text and duration but
-   * never its values. Nothing is logged when it is not set.
-   */
-  log?: Logger;
 }
 
 /** Options for a list call. All fields are optional. */

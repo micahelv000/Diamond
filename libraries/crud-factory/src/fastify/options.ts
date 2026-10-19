@@ -35,7 +35,7 @@ export interface CrudExtendTools<E extends CrudEntity<E>, TContext, S = CrudServ
   /** The entity, so custom routes can reuse its schemas. */
   entity: E;
   /**
-   * Builds the context for service and repository calls: logger, current user, row scope and transaction.
+   * Builds the context for service and repository calls: current user, row scope and transaction.
    * Pass it to every call so they all commit or roll back together. On a `config.crudPublic` route it has
    * no user and no row scope.
    */
@@ -74,19 +74,13 @@ export interface CrudRoutesOptions<E extends CrudEntity<E>, TContext, S = CrudSe
   /**
    * Access rules per operation, plus an optional `'*'` rule for all of them. A rule returns `true` to allow,
    * `false` to deny (401 if anonymous, 403 otherwise), or a SQL condition that limits which rows match.
-   * If left out, every route is open and a warning is logged at startup.
+   * If left out, every route is open.
    */
   authorize?: AuthorizeMap<TContext>;
   /** Which routes to register. Leave it out to register all five. */
   operations?: OperationsConfig;
   /** Fastify hooks added to every route here, including custom routes from `extend`. */
   hooks?: CrudHooksConfig;
-  /**
-   * Logs each validated request body at `debug` level on every route here.
-   * Turn it off when bodies hold secrets or personal data.
-   * @default true
-   */
-  logRequestBody?: boolean;
   /**
    * Runs each request, including custom routes, in one transaction that commits on success and rolls back
    * on error. Pass `serviceContext(request)` to every call to join it. Authorization and `hooks` run before

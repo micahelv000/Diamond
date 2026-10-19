@@ -1,7 +1,7 @@
 import { count, eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, test } from 'vitest';
 import { crudRoutes } from '../src/fastify/index.ts';
-import { BadRequestError, ConflictError, createRepository, createService, defineEntity, requireAuth, type Logger } from '../src/index.ts';
+import { BadRequestError, ConflictError, createRepository, createService, defineEntity, requireAuth, type Database } from '../src/index.ts';
 import { userEntity } from './fixtures/entities.ts';
 import { users } from './fixtures/schema.ts';
 import { useTestDb } from './helpers/db.ts';
@@ -13,14 +13,12 @@ const service = createService<typeof userEntity, TestUser>(repo, {
   hooks: { beforeCreate: ({ input }) => ({ ...input, passwordHash: 'hashed' }) },
 });
 
-function fakeLogger() {
-  const entries: { details: object; message: string | undefined }[] = [];
-  const log: Logger = {
-    debug: (details, message) => entries.push({ details, message }),
-    warn: (details, message) => entries.push({ details, message }),
-  };
-  return { log, entries };
-}
+// A database that fails on any use, to prove a call rejected before it queried.
+const noQueries = new Proxy({}, {
+  get() {
+    throw new Error('queried the database');
+  },
+}) as Database;
 
 const names = (result: { items: { name: string }[] }) => result.items.map((item) => item.name);
 const day = (date: string) => new Date(`${date}T00:00:00Z`);
@@ -111,69 +109,60 @@ describe('repository finders', () => {
 });
 
 describe('service finders', () => {
-  test('return the same rows through context and log like findMany', async () => {
-    const { log, entries } = fakeLogger();
-    expect(names(await service.findByStatusIn(['invited', 'banned'], { log }))).toEqual(['Carol', 'Bob']);
-    expect(names(await service.findByCreatedAtBetween(day('2026-02-01'), day('2026-03-01'), { log }, { sort: ['name'] }))).toEqual(['Bob', 'Carol']);
-    const page = await service.findByNameContaining('al', { log }, { columns: ['name'], limit: 1 });
+  test('return the same rows through context like findMany', async () => {
+    expect(names(await service.findByStatusIn(['invited', 'banned'], {}))).toEqual(['Carol', 'Bob']);
+    expect(names(await service.findByCreatedAtBetween(day('2026-02-01'), day('2026-03-01'), {}, { sort: ['name'] }))).toEqual(['Bob', 'Carol']);
+    const page = await service.findByNameContaining('al', {}, { columns: ['name'], limit: 1 });
     expect(page.items).toEqual([{ name: 'Alfred' }]);
-    const calls = entries.filter((entry) => entry.message === 'repository call');
-    expect(calls).toHaveLength(3);
-    expect(calls[0]?.details).toEqual({ entity: 'users', op: 'findMany', id: undefined, durationMs: expect.any(Number) });
-    expect(entries.filter((entry) => entry.message === 'sql')).toHaveLength(3);
   });
 
   test('honour context.scope and soft delete', async () => {
-    const { log } = fakeLogger();
-    expect(names(await service.findByStatus('active', { log, scope: eq(users.orgId, 2) }))).toEqual([]);
-    expect(names(await service.findByOrgId(2, { log, scope: eq(users.orgId, 2) }))).toEqual(['Carol']);
-    await service.delete(1, { log });
-    expect(names(await service.findByStatus('active', { log }))).toEqual(['Alfred']);
+    expect(names(await service.findByStatus('active', { scope: eq(users.orgId, 2) }))).toEqual([]);
+    expect(names(await service.findByOrgId(2, { scope: eq(users.orgId, 2) }))).toEqual(['Carol']);
+    await service.delete(1, {});
+    expect(names(await service.findByStatus('active', {}))).toEqual(['Alfred']);
   });
 
   test('a bad extra where rejects through the service', async () => {
-    const { log } = fakeLogger();
     // @ts-expect-error -- name only allows ilike
-    await expect(service.findByOrgId(1, { log }, { where: { name__eq: 'Bob' } })).rejects.toBeInstanceOf(BadRequestError);
+    await expect(service.findByOrgId(1, {}, { where: { name__eq: 'Bob' } })).rejects.toBeInstanceOf(BadRequestError);
   });
 });
 
 describe('a finder called with undefined', () => {
   // A missing optional query param often arrives as undefined; it must not turn into "match every row".
-  type Call = (log: Logger) => Promise<unknown>;
+  type Call = (tx: Database) => Promise<unknown>;
   const calls: Record<'repository' | 'service', Record<string, Call>> = {
     repository: {
       // @ts-expect-error -- undefined is not a valid value
-      findByStatus: (log) => repo.findByStatus(undefined, { log }),
+      findByStatus: (tx) => repo.findByStatus(undefined, { tx }),
       // @ts-expect-error -- undefined is not a valid value
-      findByStatusIn: (log) => repo.findByStatusIn(undefined, { log }),
+      findByStatusIn: (tx) => repo.findByStatusIn(undefined, { tx }),
       // @ts-expect-error -- undefined is not a valid value
-      'findByCreatedAtBetween (from)': (log) => repo.findByCreatedAtBetween(undefined, day('2026-03-01'), { log }),
+      'findByCreatedAtBetween (from)': (tx) => repo.findByCreatedAtBetween(undefined, day('2026-03-01'), { tx }),
       // @ts-expect-error -- undefined is not a valid value
-      'findByCreatedAtBetween (to)': (log) => repo.findByCreatedAtBetween(day('2026-02-01'), undefined, { log }),
+      'findByCreatedAtBetween (to)': (tx) => repo.findByCreatedAtBetween(day('2026-02-01'), undefined, { tx }),
     },
     service: {
       // @ts-expect-error -- undefined is not a valid value
-      findByStatus: (log) => service.findByStatus(undefined, { log }),
+      findByStatus: (tx) => service.findByStatus(undefined, { tx }),
       // @ts-expect-error -- undefined is not a valid value
-      findByStatusIn: (log) => service.findByStatusIn(undefined, { log }),
+      findByStatusIn: (tx) => service.findByStatusIn(undefined, { tx }),
       // @ts-expect-error -- undefined is not a valid value
-      'findByCreatedAtBetween (from)': (log) => service.findByCreatedAtBetween(undefined, day('2026-03-01'), { log }),
+      'findByCreatedAtBetween (from)': (tx) => service.findByCreatedAtBetween(undefined, day('2026-03-01'), { tx }),
       // @ts-expect-error -- undefined is not a valid value
-      'findByCreatedAtBetween (to)': (log) => service.findByCreatedAtBetween(day('2026-02-01'), undefined, { log }),
+      'findByCreatedAtBetween (to)': (tx) => service.findByCreatedAtBetween(day('2026-02-01'), undefined, { tx }),
     },
   };
 
   for (const [label, finders] of Object.entries(calls)) {
     for (const [finder, call] of Object.entries(finders)) {
       test(`${label} ${finder} rejects with BadRequestError without querying`, async () => {
-        const { log, entries } = fakeLogger();
-        // Calling must not throw synchronously; the error arrives as a rejection.
-        const result = call(log);
+        // Calling must not throw synchronously; the error arrives as a rejection. A query would fail on `noQueries`.
+        const result = call(noQueries);
         const error = await result.catch((caught: unknown) => caught);
         expect(error).toBeInstanceOf(BadRequestError);
         expect((error as Error).message).toContain(finder.split(' ')[0]);
-        expect(entries.filter((entry) => entry.message === 'sql')).toHaveLength(0);
       });
     }
   }

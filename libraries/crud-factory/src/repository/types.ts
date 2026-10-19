@@ -20,7 +20,7 @@ import type {
 export interface RepositoryInternals<E extends AnyEntity> {
   /**
    * The way to reach the database from a custom query. Pass the caller's options, and the returned
-   * `db`, `where` and `run` apply its transaction, scope and logger, plus soft delete, the same way
+   * `db`, `where` and `run` apply its transaction and scope, plus soft delete, the same way
    * the built-in methods do.
    */
   scoped(options?: QueryOptions): ScopedQuery;
@@ -47,15 +47,9 @@ export interface ScopedQuery {
    * with `condition` when given.
    */
   where(condition?: SQL): SQL | undefined;
-  /**
-   * Runs a query and returns its result, mapping database errors like the built-in methods do.
-   * When the caller gave a `log`, it logs the SQL text (never the values) and duration at `debug`.
-   */
-  run<R>(query: RunnableQuery<R>): Promise<R>;
+  /** Runs a query and returns its result, mapping database errors like the built-in methods do. */
+  run<R>(query: PromiseLike<R>): Promise<R>;
 }
-
-/** A drizzle query builder that can be awaited and can print its SQL. */
-export type RunnableQuery<R> = PromiseLike<R> & { toSQL(): { sql: string } };
 
 /** The built-in repository: the entity, its database, the CRUD methods and the generated finders, without `.extend()`. */
 export type CrudRepositoryBase<E extends AnyEntity> = CrudRepositoryMethods<E> & RepositoryFinders<E>;

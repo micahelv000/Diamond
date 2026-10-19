@@ -3,14 +3,14 @@ import type { PgColumn, PgTable } from 'drizzle-orm/pg-core';
 import { serverOnlyKeys, softDeleteKey } from '../config.ts';
 import { BadRequestError, ConflictError, findPostgresError, mapDatabaseError, NotFoundError } from '../errors.ts';
 import type {
-  AnyEntity, Database, ListOptions, Logger, PaginationConfig, PrimaryKeyValue, QueryOptions, RepositoryFinders, Row, VisibleKey,
+  AnyEntity, Database, ListOptions, PaginationConfig, PrimaryKeyValue, QueryOptions, RepositoryFinders, Row, VisibleKey,
 } from '../types.ts';
 import { withExtend } from '../extend.ts';
 import { buildFinders, typedFinders, type FinderMethods } from './finders.ts';
 import { pickFields, selection, typedColumns, typedRows, visibleColumns, type ColumnMap } from './projection.ts';
 import { createKeyset } from './cursor.ts';
 import { orderBy, sortKeys, type SortKey } from './sort.ts';
-import type { CrudRepository, CrudRepositoryBase, CrudRepositoryMethods, RepositoryInternals, RunnableQuery, ScopedQuery } from './types.ts';
+import type { CrudRepository, CrudRepositoryBase, CrudRepositoryMethods, RepositoryInternals, ScopedQuery } from './types.ts';
 import { whereToSql } from './utils.ts';
 
 async function withErrorMapping<R>(query: () => Promise<R>): Promise<R> {
@@ -18,19 +18,6 @@ async function withErrorMapping<R>(query: () => Promise<R>): Promise<R> {
     return await query();
   } catch (error) {
     throw mapDatabaseError(error);
-  }
-}
-
-/**
- * Runs one statement and, if a logger is given, logs its SQL text and duration at `debug`.
- * Parameter values are never logged. Failed statements are logged too.
- */
-async function logStatement<R>(log: Logger | undefined, entity: string, statement: PromiseLike<R>, sqlText: () => string): Promise<R> {
-  const started = performance.now();
-  try {
-    return await statement;
-  } finally {
-    log?.debug({ entity, sql: sqlText(), durationMs: Math.round(performance.now() - started) }, 'sql');
   }
 }
 
@@ -93,7 +80,6 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
   const baseWhere = (scope?: SQL): SQL | undefined =>
     and(softDeleteColumn ? isNull(softDeleteColumn) : undefined, scope);
   const byId = (id: PrimaryKeyValue<E>, scope?: SQL) => and(eq(primaryColumn, id), baseWhere(scope));
-  const runStatement = <R>(log: Logger | undefined, query: RunnableQuery<R>) => logStatement(log, name, query, () => query.toSQL().sql);
   const sortBy = (sort?: readonly string[]) => orderBy(sortKeys(visible, sort ?? defaultSort, config.primaryKey));
   const keyset = createKeyset(table);
 
@@ -109,13 +95,12 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
   // Fetches one row more than the limit, to tell whether another page follows.
   const fetchPage = (options: QueryOptions, page: PageQuery) => {
     const select = executorFor(options).select({ ...page.columns, ...keyset.fields(page.keys) }).from(table).where(page.where);
-    return runStatement(options.log, select.orderBy(...orderBy(page.keys)).limit(page.limit + 1).offset(page.offset));
+    return select.orderBy(...orderBy(page.keys)).limit(page.limit + 1).offset(page.offset);
   };
 
   const countIfAsked = async (options: ListOptions<E> & QueryOptions, where: SQL | undefined) => {
     if (!options.withTotal) return undefined;
-    // `$count` can't print its SQL, so it is logged as `count`.
-    return logStatement(options.log, name, executorFor(options).$count(table, where), () => 'count');
+    return executorFor(options).$count(table, where);
   };
 
   const findMany: CrudRepositoryMethods<E>['findMany'] = (options = {}) =>
@@ -162,14 +147,14 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
     findById: <K extends VisibleKey<E>>(id: PrimaryKeyValue<E>, options: { columns?: readonly K[] } & QueryOptions = {}) =>
       withErrorMapping(async () => {
         const query = executorFor(options).select(selection(visible, options.columns)).from(table).where(byId(id, options.scope)).limit(1);
-        const rows = await runStatement(options.log, query);
+        const rows = await query;
         return typedRows<Pick<Row<E>, K>>(rows)[0] ?? null;
       }),
 
     create: (input, options = {}) =>
       withErrorMapping(async () => {
         const values: Record<string, unknown> = input;
-        const rows = await runStatement(options.log, executorFor(options).insert(table).values(values).returning(visible));
+        const rows = await executorFor(options).insert(table).values(values).returning(visible);
         return firstOrNotFound(typedRows<Row<E>>(rows), name);
       }),
 
@@ -178,7 +163,7 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
         const values: Record<string, unknown> = patch;
         if (!Object.values(values).some((value) => value !== undefined)) throw new BadRequestError('Nothing to update');
         const query = executorFor(options).update(table).set(values).where(byId(id, options.scope)).returning(visible);
-        const rows = await runStatement(options.log, query);
+        const rows = await query;
         return firstOrNotFound(typedRows<Row<E>>(rows), name);
       }),
 
@@ -187,8 +172,8 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
         const executor = executorFor(options);
         const where = byId(id, options.scope);
         const rows = softDeleteValues
-          ? await runStatement(options.log, executor.update(table).set(softDeleteValues).where(where).returning(visible))
-          : await runStatement(options.log, executor.delete(table).where(where).returning(visible)).catch((error: unknown) => {
+          ? await executor.update(table).set(softDeleteValues).where(where).returning(visible)
+          : await executor.delete(table).where(where).returning(visible).catch((error: unknown) => {
               throw stillReferenced(error);
             });
         return firstOrNotFound(typedRows<Row<E>>(rows), name);
@@ -198,7 +183,7 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
   const scoped = (options: QueryOptions = {}): ScopedQuery => ({
     db: executorFor(options),
     where: (condition) => and(baseWhere(options.scope), condition),
-    run: (query) => withErrorMapping(() => runStatement(options.log, query)),
+    run: (query) => withErrorMapping(async () => query),
   });
 
   const internals: RepositoryInternals<E> = {

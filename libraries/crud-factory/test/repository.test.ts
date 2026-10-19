@@ -2,7 +2,7 @@ import { eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { beforeEach, describe, expect, test } from 'vitest';
 import {
-  BadRequestError, ConflictError, createRepository, defineEntity, mapDatabaseError, NotFoundError, type EntityConfig, type Logger,
+  BadRequestError, ConflictError, createRepository, defineEntity, mapDatabaseError, NotFoundError, type EntityConfig,
   type QueryOptions, type SortSpec,
 } from '../src/index.ts';
 import { postEntity, userEntity } from './fixtures/entities.ts';
@@ -385,25 +385,15 @@ describe('extend safety nets', () => {
     expect(error).toMatchObject({ statusCode: 409, constraint: 'users_email_unique' });
   });
 
-  test('scoped(options).run logs one sql debug line through options.log, with no values, and maps errors', async () => {
-    const entries: { level: string; details: object; message: string | undefined }[] = [];
-    const log: Logger = {
-      debug: (details, message) => entries.push({ level: 'debug', details, message }),
-      warn: (details, message) => entries.push({ level: 'warn', details, message }),
-    };
+  test('scoped(options).run runs the query and maps errors', async () => {
     // Called directly, not from an extend method, so the automatic wrapping can't do `run`'s job for it.
     const repository = createRepository(db, userEntity).extend((internals) => ({ internals: () => internals }));
     const { scoped, table } = repository.internals();
-    const query = scoped({ log });
+    const query = scoped();
     const created = await repository.create(newUser({ email: 'secret@example.com' }));
 
     const ids = await query.run(query.db.select({ id: table.id }).from(table).where(query.where(eq(table.email, 'secret@example.com'))));
     expect(ids).toEqual([{ id: created.id }]);
-    expect(entries).toEqual([
-      { level: 'debug', message: 'sql', details: { entity: 'users', sql: expect.stringContaining('from "users"'), durationMs: expect.any(Number) } },
-    ]);
-    expect(JSON.stringify(entries)).toContain('$1');
-    expect(JSON.stringify(entries)).not.toContain('secret@example.com');
 
     const duplicate = query.run(query.db.insert(table).values(newUser({ email: 'secret@example.com' })));
     await expect(duplicate).rejects.toBeInstanceOf(ConflictError);

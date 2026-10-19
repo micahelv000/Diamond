@@ -4,7 +4,7 @@ Turn a Drizzle `pgTable` and one config object into three layers you would other
 every entity:
 
 1. a strictly typed **repository** (DAL),
-2. a **service** that runs hooks and logs through Fastify's request logger,
+2. a **service** that runs your hooks around every write,
 3. a **Fastify plugin** with validated, permission-aware CRUD routes.
 
 Each layer works on its own (a worker can use only the repository), and each can be extended
@@ -66,7 +66,7 @@ global setup. `examples/users.ts` is a runnable version (`npx tsx examples/users
 |---|---|
 | `service` | The `createService` result. Its entity drives the routes and schemas. |
 | `context?` | `(request) => TContext \| undefined` (may be async). Maps your auth (e.g. `request.user`) to what rules see. |
-| `authorize?` | Rules per operation (`list`, `get`, `create`, `update`, `delete`) and `'*'`. Without it, routes are open and one startup warning is logged; with it but no `context`, every request is anonymous (also warned). |
+| `authorize?` | Rules per operation (`list`, `get`, `create`, `update`, `delete`) and `'*'`. Without it, routes are open; with it but no `context`, every request is anonymous (401). |
 | `operations?` | `{ only?: Operation[] }` or `{ except?: Operation[] }` to register a subset. |
 | `hooks?` | Any Fastify request hook (`onRequest`, `preValidation`, `preHandler`, `onSend`, `onResponse`, `onError`…), an async function or an array of them (no `done` callbacks). Added to the plugin scope, so they run on generated and `extend` routes (rate limits, metrics…). `preHandler` hooks run after `authorize`. |
 | `extend?` | `(scope, { service, entity, serviceContext }) => void` to add custom routes in the same scope. Each needs `config.crudOperation` or `config.crudPublic: true`, or startup fails. See [Extension points](#extension-points). |
@@ -116,8 +116,8 @@ Tip: name the entity's types instead of repeating them: `type User = Row<typeof 
 ## Finder methods
 
 Each operator in `filterable` generates one typed method on the repository and on the service. The
-service ones take a `context` after the value(s) and run through the service's `findMany`, so they get its
-logging, the caller's scope, soft delete and the request transaction.
+service ones take a `context` after the value(s) and run through the service's `findMany`, so they get
+the caller's scope, soft delete and the request transaction.
 
 | Config | Repository | Service |
 |---|---|---|
@@ -323,8 +323,7 @@ A custom query takes the caller's `QueryOptions` and reaches the database only t
   the request's [transaction](#transactions).
 - `where(condition?)`: the full WHERE: soft delete and the caller's permission scope, ANDed with your
   condition.
-- `run(query)`: runs the query, logging it through the caller's `log` and mapping database errors,
-  like the built-in methods.
+- `run(query)`: runs the query and maps database errors, like the built-in methods.
 
 Order a list with `orderBy(sort)`: the caller's sort, else `defaultSort`, ending with the primary key,
 like `findMany`:
@@ -357,9 +356,6 @@ outside `extend` can still use the public `repository.db`.
   that returns `query.run(…)`) and it rejects, the error goes through the same mapping as the base methods.
   A unique violation becomes a `ConflictError` (409), a missing foreign key a `BadRequestError` (400),
   not a 500. A method that returns a query builder without running it is passed through unchanged.
-- **Logging is opt-in.** Only the caller knows the logger, so pass its options on: `scoped(options).run(query)` logs the
-  statement text (values stay `$1`, `$2` … parameters) and its duration at debug as `sql`. In a route,
-  `serviceContext(request)` carries `request.log`, so passing it as the method's options is enough.
 
 For `updatedAt`, use drizzle's `$onUpdate(() => new Date())` on the column: the repository's
 `update` then sets it.
@@ -383,7 +379,7 @@ service methods that call `base.create`, `base.update` or `base.delete`. Finders
 | `beforeDelete` | before the delete | `{ id, context }`; read the row yourself if you need it | nothing; throw to block |
 | `afterDelete` | after the delete, soft or hard | `{ id, row, context }`: the deleted row | nothing (ignored) |
 
-Throw from any hook to fail the call; its error is logged like the write's own. Inside a
+Throw from any hook to fail the call. Inside a
 [transaction](#transactions) (every route, by default) a throwing hook rolls back the write as well.
 Work done outside the database, such as sending emails or events, can't be rolled back.
 
@@ -392,7 +388,7 @@ Work done outside the database, such as sending emails or events, can't be rolle
 `service.extend((base) => ({ … }))` adds your own operations to the service. `base` is the service so
 far (the five CRUD methods, the finders, `entity`, `repository` and earlier extensions). The methods are plain
 functions: nothing is wrapped for you. Take a `context` and pass it to the `base` built-ins, and hooks,
-logging, the caller's scope and the request's transaction all apply:
+the caller's scope and the request's transaction all apply:
 
 ```ts
 const flightService = createService<typeof flightEntity, Caller, typeof flightRepo>(flightRepo, { hooks }).extend((base) => ({
@@ -414,7 +410,7 @@ the service, so `crudRoutes`' `extend` and other callers reach it as `service.de
 
 The service keeps the repository's full type as `service.repository`, so custom routes reach your
 `extend` methods through the `service` that `extend` receives; there is no separate `repository`
-option. Calls on `service.repository` skip the service's hooks and its `repository call` log line. If
+option. Calls on `service.repository` skip the service's hooks. If
 you pass `createService`'s type arguments yourself (e.g. to type `context.auth`), add the repository's type
 third, or `service.repository` only knows the base methods:
 
@@ -428,7 +424,7 @@ scope.get('/delayed', { config: { crudOperation: 'list' } }, (request) =>
 Every custom route must say how it is authorized. `config: { crudOperation }` names the operation it
 acts as, and that operation's `authorize` rule runs before the handler. `config: { crudPublic: true }`
 marks a route as intentionally public: no rule runs, and `serviceContext(request)` has no `auth` and no
-`scope` but still carries the logger and the transaction. A route with neither, or with both, fails at
+`scope` but still carries the transaction. A route with neither, or with both, fails at
 startup (`app.ready()` rejects) with a message naming the route, so a forgotten tag can't leave a
 route that reads `service.repository` or the database unauthenticated. The check covers every route in
 the plugin's scope, including routes added by plugins you register inside `extend`. A write route
@@ -497,7 +493,7 @@ malformed JSON) use the same shape but keep Fastify's code, such as `FST_ERR_CTP
 | 403 | `FORBIDDEN` | A rule returned `false` for a known caller |
 | 404 | `NOT_FOUND` | No row for the id (or it is outside the caller's scope) |
 | 409 | `CONFLICT` | Unique violation, or a hard delete of a row that is still referenced (`data.constraint` names the constraint), or a `ConflictError` your code threw (no `data`) |
-| 500 | `INTERNAL_SERVER_ERROR` | Anything else. Logged at error level with the request id as `{ name, code, constraint, stack }`: never the message, which can hold query parameters. Details are never sent. |
+| 500 | `INTERNAL_SERVER_ERROR` | Anything else. Details are never sent; add an `onError` hook to log them (see [Logging](#logging)). |
 
 The same error classes (`NotFoundError`, `ConflictError`, …) are thrown by the repository and
 service, so non-HTTP callers get the same codes. Throw them from hooks and custom routes too; each
@@ -525,15 +521,24 @@ with `message` defaulting to `'Resource already exists'`. It used to be
 
 ## Logging
 
-Every layer logs through `request.log`, so every line carries the request id. All of it is at debug
-level, between Fastify's own `incoming request` / `request completed` info lines:
+The library never logs, at any layer. Fastify still writes its own `incoming request` and `request completed`
+lines. Add any logging yourself, where you want it:
 
-| Layer | Message | Fields |
-|---|---|---|
-| Routes | `request body` | the validated body (unknown and omitted fields already removed); turn off with `logRequestBody: false` |
-| Authorization | `authorization` | `op`, `decision`, `anonymous` (never the user object) |
-| Repository | `sql` | `entity`, the statement text (values are `$1`, `$2` … parameters, never inlined), `durationMs`. Custom `extend` queries log it when run through `scoped(options).run(query)`. |
-| Service | `repository call` | `entity`, `op`, `id`, `durationMs` |
+- **Errors:** an `onError` hook in `hooks` gets every error a route throws, 500s included:
+  `hooks: { onError: async (request, _reply, error) => request.log.error({ err: error }, 'route failed') }`.
+- **In the service:** pass `request.log` from the route explicitly. For hooks, put it on what `context`
+  returns, and read it as `context.auth.log`. For your own service methods, pass it as an argument:
 
-Library errors are logged with their `code`: client errors (4xx) at debug, others at warn. Unexpected
-errors (500) are logged at error level without the query's parameter values.
+```ts
+crudRoutes({
+  service: flightService,
+  context: (request) => request.user && { ...request.user, log: request.log },
+  extend: (scope, { service, serviceContext }) => {
+    scope.post('/:id/delay', { config: { crudOperation: 'update' } }, (request) =>
+      service.delayFlight(request.params.id, 30, serviceContext(request), request.log));
+  },
+});
+// in createService(…, { hooks: { afterCreate: ({ row, context }) => context.auth?.log.info({ id: row.id }, 'flight scheduled') } })
+```
+
+`examples/flights.ts` does both.

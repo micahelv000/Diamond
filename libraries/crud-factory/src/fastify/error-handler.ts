@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { ConflictError, findPostgresError, CrudFactoryError } from '../errors.ts';
+import { ConflictError, CrudFactoryError } from '../errors.ts';
 
 /** The JSON body of every error response from the CRUD routes. */
 export interface ErrorBody {
@@ -24,20 +24,8 @@ function clientErrorStatus(error: unknown): number | undefined {
   return error.statusCode >= 400 && error.statusCode < 500 ? error.statusCode : undefined;
 }
 
-// The error message and first stack line can contain SQL parameter values, so only safe fields are logged.
-function loggableError(error: unknown) {
-  const pgError = findPostgresError(error);
-  const stack = error instanceof Error ? error.stack?.split('\n').filter((line) => /^\s+at /.test(line)) : undefined;
-  return {
-    name: error instanceof Error ? error.name : typeof error,
-    code: pgError?.code,
-    constraint: pgError?.constraint,
-    stack: stack?.join('\n'),
-  };
-}
-
 /** Turns library and validation errors into an error body, and hides any other error behind a 500. */
-export function crudErrorHandler(error: unknown, request: FastifyRequest, reply: FastifyReply): FastifyReply {
+export function crudErrorHandler(error: unknown, _request: FastifyRequest, reply: FastifyReply): FastifyReply {
   const send = (status: number, body: ErrorBody) => reply.status(status).send(body);
 
   if (error instanceof CrudFactoryError) {
@@ -58,6 +46,5 @@ export function crudErrorHandler(error: unknown, request: FastifyRequest, reply:
     return send(status, { code, message: error.message });
   }
 
-  request.log.error({ error: loggableError(error) }, 'unhandled error in CRUD route');
   return send(500, { code: 'INTERNAL_SERVER_ERROR', message: 'Internal Server Error' });
 }

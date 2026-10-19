@@ -4,7 +4,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { and, count, eq, gt, gte, lt, ne, sql } from 'drizzle-orm';
 import { alias, index, integer, pgEnum, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
-import Fastify, { type LightMyRequestResponse } from 'fastify';
+import Fastify, { type FastifyBaseLogger, type LightMyRequestResponse } from 'fastify';
 import pretty from 'pino-pretty';
 import { z } from 'zod';
 import {
@@ -89,7 +89,7 @@ type FlightSort = readonly SortSpec<typeof flightEntity>[];
 
 // 3. Custom queries
 // `scoped(options)` gives the database for this call: `db` joins the caller's transaction, `where`
-// adds soft delete and the caller's scope, and `run` logs the SQL and maps database errors.
+// adds soft delete and the caller's scope, and `run` maps database errors.
 // `orderBy(sort)` uses the given sort or `defaultSort`.
 const origin = alias(airports, 'origin');
 const destination = alias(airports, 'destination');
@@ -142,7 +142,8 @@ const flightRepo = createRepository(db, flightEntity).extend(({ scoped, table, p
 
 // 4. Service
 // Business rules live in hooks so every caller gets them, not just routes.
-interface Caller { id: number; roles: string[] }
+// The library never logs. To log from hooks, the route puts `request.log` on the caller itself (see `context` below).
+interface Caller { id: number; roles: string[]; log: FastifyBaseLogger }
 type Schedule = Pick<Flight, 'aircraftId' | 'originCode' | 'destinationCode' | 'scheduledDeparture' | 'scheduledArrival'>;
 const scheduleKeys = ['aircraftId', 'originCode', 'destinationCode', 'scheduledDeparture', 'scheduledArrival'] as const;
 
@@ -163,7 +164,7 @@ const baseFlightService = createService<typeof flightEntity, Caller, typeof flig
     beforeUpdate: async ({ id, patch, context }) => {
       // Re-check only when the schedule changes, merging the patch with the stored row.
       if (scheduleKeys.some((key) => patch[key] !== undefined)) {
-        const current = await flightRepo.findById(id, { columns: scheduleKeys, scope: context.scope, tx: context.tx, log: context.log });
+        const current = await flightRepo.findById(id, { columns: scheduleKeys, scope: context.scope, tx: context.tx });
         if (!current) throw new NotFoundError('flights not found');
         await assertSchedulable({ ...current, ...patch }, context, id);
       }
@@ -175,24 +176,24 @@ const baseFlightService = createService<typeof flightEntity, Caller, typeof flig
         ...(patch.status === 'landed' && !patch.actualArrival && { actualArrival: now }),
       };
     },
-    afterCreate: ({ row, context }) => context.log.debug({ id: row.id }, 'flight scheduled'),
-    afterUpdate: ({ row, context }) => context.log.debug({ id: row.id, status: row.status }, 'flight updated'),
+    afterCreate: ({ row, context }) => context.auth?.log.info({ id: row.id }, 'flight scheduled'),
+    afterUpdate: ({ row, context }) => context.auth?.log.info({ id: row.id, status: row.status }, 'flight updated'),
     // A flight that has flown stays on record.
     beforeDelete: async ({ id, context }) => {
-      const current = await flightRepo.findById(id, { columns: ['status'], scope: context.scope, tx: context.tx, log: context.log });
+      const current = await flightRepo.findById(id, { columns: ['status'], scope: context.scope, tx: context.tx });
       if (current?.status === 'departed' || current?.status === 'landed') throw new ConflictError(`Can't delete a ${current.status} flight`);
     },
   },
 });
 
-// Custom service methods. Calling `base` methods with `context` runs the hooks, logging, scope and transaction.
+// Custom service methods. Calling `base` methods with `context` runs the hooks, scope and transaction.
 const flightService = baseFlightService.extend((base) => ({
-  delayFlight: async (id: number, minutes: number, context: ServiceContext<Caller>): Promise<Flight> => {
-  
+  // The route passes its logger in as a plain argument.
+  delayFlight: async (id: number, minutes: number, context: ServiceContext<Caller>, log: FastifyBaseLogger): Promise<Flight> => {
     const flight = await base.findById(id, { columns: ['scheduledDeparture', 'scheduledArrival'] }, context);
     if (!flight) throw new NotFoundError('flights not found');
     const shift = (date: Date) => new Date(date.getTime() + minutes * 60_000);
-    context.log.debug({ id, minutes }, 'delaying flight');
+    log.info({ id, minutes }, 'delaying flight');
     return base.update(id, { scheduledDeparture: shift(flight.scheduledDeparture), scheduledArrival: shift(flight.scheduledArrival) }, context);
   },
   // In a route, `context` carries the request transaction, so if the second create fails the first is rolled back.
@@ -213,17 +214,20 @@ const prettyStream = pretty({ sync: true, singleLine: true, translateTime: 'HH:M
 const app = Fastify({ logger: { level: isDev ? 'debug' : 'info', ...(isDev && { stream: prettyStream }) } });
 // Fake auth: the caller comes from a header. `request.user` isn't declared here because the test
 // helpers already declare it in the shared tsconfig.
-const callers: Record<string, Caller> = { ops: { id: 1, roles: ['ops'] }, passenger: { id: 2, roles: [] } };
-const callerOf = (header: string | string[] | undefined): Caller | undefined =>
-  typeof header === 'string' ? callers[header] : undefined;
+const callers: Record<string, Omit<Caller, 'log'>> = { ops: { id: 1, roles: ['ops'] }, passenger: { id: 2, roles: [] } };
+const callerOf = (header: string | string[] | undefined) => (typeof header === 'string' ? callers[header] : undefined);
 
 const flightRead = flightEntity.schemas.read;
 const flightRoutes = crudRoutes({
   service: flightService,
-  context: (request) => callerOf(request.headers['x-user']),
+  // Passes `request.log` to the service explicitly, as part of the caller, so hooks can log with the request id.
+  context: (request): Caller | undefined => {
+    const caller = callerOf(request.headers['x-user']);
+    return caller && { ...caller, log: request.log };
+  },
   authorize: { '*': requireAuth, create: requireRole('ops'), update: requireRole('ops'), delete: requireRole('ops') },
   extend: (scope, { service, entity, serviceContext }) => {
-    // `service.repository` holds the custom queries; `serviceContext` passes them the route's scope and logger.
+    // `service.repository` holds the custom queries; `serviceContext` passes them the route's scope and transaction.
     const delayed = z.array(z.intersection(flightRead, z.object({ delayMinutes: z.number() })));
     scope.get('/delayed', {
       config: { crudOperation: 'list' },
@@ -258,7 +262,7 @@ const flightRoutes = crudRoutes({
     scope.post('/:id/delay', {
       config: { crudOperation: 'update' },
       schema: { params: entity.schemas.params, body: z.object({ minutes: z.number().int().min(1).max(1440) }), response: { 200: flightRead } },
-    }, (request) => service.delayFlight(request.params.id, request.body.minutes, serviceContext(request)));
+    }, (request) => service.delayFlight(request.params.id, request.body.minutes, serviceContext(request), request.log));
 
     scope.post('/rotation', {
       config: { crudOperation: 'create' },

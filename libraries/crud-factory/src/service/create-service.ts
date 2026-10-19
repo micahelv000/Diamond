@@ -1,5 +1,4 @@
 import type { SQL } from 'drizzle-orm';
-import { CrudFactoryError } from '../errors.ts';
 import { withExtend } from '../extend.ts';
 import { buildFinders, typedFinders, type FinderMethods } from '../repository/finders.ts';
 import type { CrudRepository } from '../repository/types.ts';
@@ -15,7 +14,6 @@ import type {
   FindByIdOptions,
   ListOptions,
   ListResult,
-  Logger,
   NoOverride,
   Patch,
   PrimaryKeyValue,
@@ -31,8 +29,6 @@ import type {
  * Per-call information passed to every service method. Generated routes build it; elsewhere, build it yourself.
  */
 export interface ServiceContext<TAuth = unknown> {
-  /** The logger to write to. In a route, pass the request's logger so logs include the request id. */
-  log: Logger;
   /** The caller's context from the routes' `context` option. Hooks can read it. */
   auth?: TAuth;
   /** An extra SQL condition that limits which rows this call can read or change. Routes set it from the `authorize` rules. */
@@ -113,7 +109,7 @@ type ServiceRangeFinders<E extends AnyEntity, TAuth> = {
 
 /**
  * Finder methods generated from the entity's `filterable` columns. They match the repository finders but
- * take a `context` after the value(s), and run through the service's `findMany`, so logging, scope, soft delete
+ * take a `context` after the value(s), and run through the service's `findMany`, so scope, soft delete
  * and the transaction all apply. `options` accepts everything `findMany` does; its `where` is ANDed with the finder's condition.
  */
 export type ServiceFinders<E extends AnyEntity, TAuth = unknown> = ServiceValueFinders<E, TAuth> & ServiceRangeFinders<E, TAuth>;
@@ -128,7 +124,7 @@ export type CrudServiceBase<E extends AnyEntity, TAuth = unknown, R extends Crud
 /** The entity, the repository and the CRUD methods that every service has. */
 export interface CrudServiceMethods<E extends AnyEntity, TAuth = unknown, R extends CrudRepository<E> = CrudRepository<E>> {
   readonly entity: E;
-  /** The wrapped repository, including its custom methods. Calls made on it skip the service's hooks and logging. */
+  /** The wrapped repository, including its custom methods. Calls made on it skip the service's hooks. */
   readonly repository: R;
   findMany<K extends VisibleKey<E> = VisibleKey<E>>(options: ListOptions<E, K>, context: ServiceContext<TAuth>): Promise<ListResult<E, K>>;
   findById<K extends VisibleKey<E> = VisibleKey<E>>(
@@ -152,21 +148,15 @@ export type CrudService<
     /**
      * Returns a new service with your own methods added; the original is unchanged. `base` is the service
      * so far, and reusing a built-in name is a compile error. Pass a `context` through to the `base` methods
-     * so that hooks, logging, scope and the transaction apply.
+     * so that hooks, scope and the transaction apply.
      */
     extend<Y extends object>(
       factory: (base: CrudService<E, TAuth, R, X>) => Y & NoOverride<keyof CrudServiceBase<E, TAuth, R> | 'extend'>,
     ): CrudService<E, TAuth, R, X & Y>;
   };
 
-type ServiceMethod = 'findMany' | 'findById' | 'create' | 'update' | 'delete';
-
-function elapsedMs(started: number): number {
-  return Math.round(performance.now() - started);
-}
-
 /**
- * Wraps a repository with hooks and logging. Only ids and timings are logged, never values.
+ * Wraps a repository with hooks.
  * If you pass type arguments yourself, pass the repository's type third to keep its custom methods typed.
  */
 export function createService<E extends AnyEntity, TAuth = unknown, R extends CrudRepository<E> = CrudRepository<E>>(
@@ -175,26 +165,8 @@ export function createService<E extends AnyEntity, TAuth = unknown, R extends Cr
   options: ServiceOptions<E, TAuth> = {},
 ): CrudService<E, TAuth, R> {
   const { hooks = {} } = options;
-  const entity = repository.entity.name;
 
-  async function logged<T>(op: ServiceMethod, context: ServiceContext<TAuth>, id: PrimaryKeyValue<E> | undefined, call: () => Promise<T>): Promise<T> {
-    const started = performance.now();
-    try {
-      const result = await call();
-      context.log.debug({ entity, op, id, durationMs: elapsedMs(started) }, 'repository call');
-      return result;
-    } catch (error) {
-      if (error instanceof CrudFactoryError) {
-        // Client errors (4xx) are logged at debug level so they don't trigger alerts.
-        const level = error.statusCode < 500 ? 'debug' : 'warn';
-        context.log[level]({ entity, op, id, code: error.code, durationMs: elapsedMs(started) }, error.message);
-      }
-      throw error;
-    }
-  }
-
-  // Passing the logger down makes the repository's SQL logs use the caller's logger and request id.
-  const queryOptions = (context: ServiceContext<TAuth>): QueryOptions => ({ tx: context.tx, scope: context.scope, log: context.log });
+  const queryOptions = (context: ServiceContext<TAuth>): QueryOptions => ({ tx: context.tx, scope: context.scope });
   // Without a hook the input is inserted as-is, so omitted columns must have database defaults.
   // The casts are needed because TypeScript can't relate the two `Omit` types over a generic table.
   const toInsert = async (input: CreateInput<E>, context: ServiceContext<TAuth>): Promise<Insert<E>> =>
@@ -204,7 +176,7 @@ export function createService<E extends AnyEntity, TAuth = unknown, R extends Cr
     hooks.beforeUpdate ? hooks.beforeUpdate({ id, patch, context }) : (patch as Patch<E>);
 
   const findMany: CrudServiceMethods<E, TAuth, R>['findMany'] = (listOptions, context) =>
-    logged('findMany', context, undefined, () => repository.findMany({ ...listOptions, ...queryOptions(context) }));
+    repository.findMany({ ...listOptions, ...queryOptions(context) });
 
   const finders: FinderMethods = {};
   for (const finder of buildFinders(repository.entity)) {
@@ -223,28 +195,23 @@ export function createService<E extends AnyEntity, TAuth = unknown, R extends Cr
     repository,
     findMany,
     ...typedFinders<ServiceFinders<E, TAuth>>(finders),
-    findById: (id, findOptions, context) =>
-      logged('findById', context, id, () => repository.findById(id, { ...findOptions, ...queryOptions(context) })),
-    // The hooks run inside `logged`, so their errors are logged like the write's own.
-    create: (input, context) =>
-      logged('create', context, undefined, async () => {
-        const row = await repository.create(await toInsert(input, context), queryOptions(context));
-        await hooks.afterCreate?.({ row, input, context });
-        return row;
-      }),
-    update: (id, patch, context) =>
-      logged('update', context, id, async () => {
-        const row = await repository.update(id, await toPatch(id, patch, context), queryOptions(context));
-        await hooks.afterUpdate?.({ id, row, patch, context });
-        return row;
-      }),
-    delete: (id, context) =>
-      logged('delete', context, id, async () => {
-        await hooks.beforeDelete?.({ id, context });
-        const row = await repository.delete(id, queryOptions(context));
-        await hooks.afterDelete?.({ id, row, context });
-        return row;
-      }),
+    findById: (id, findOptions, context) => repository.findById(id, { ...findOptions, ...queryOptions(context) }),
+    create: async (input, context) => {
+      const row = await repository.create(await toInsert(input, context), queryOptions(context));
+      await hooks.afterCreate?.({ row, input, context });
+      return row;
+    },
+    update: async (id, patch, context) => {
+      const row = await repository.update(id, await toPatch(id, patch, context), queryOptions(context));
+      await hooks.afterUpdate?.({ id, row, patch, context });
+      return row;
+    },
+    delete: async (id, context) => {
+      await hooks.beforeDelete?.({ id, context });
+      const row = await repository.delete(id, queryOptions(context));
+      await hooks.afterDelete?.({ id, row, context });
+      return row;
+    },
   };
 
   // `X` collects the types of all methods added so far; see `withExtend`.

@@ -1,6 +1,4 @@
 import { drizzle } from 'drizzle-orm/pglite';
-import { pino } from 'pino';
-import type { FastifyBaseLogger } from 'fastify';
 import { describe, expectTypeOf, test } from 'vitest';
 import {
   createRepository,
@@ -9,7 +7,6 @@ import {
   type CrudRepository,
   type CrudService,
   type Filter,
-  type Logger,
   type Row,
   type ServiceContext,
   type SortSpec,
@@ -179,11 +176,6 @@ describe('service', () => {
     // With only the first two type arguments, `R` falls back to the base repository.
     const base = createService<UserEntity, { orgId: number }>(extended);
     expectTypeOf(base.repository).toEqualTypeOf<CrudRepository<UserEntity>>();
-  });
-
-  test('pino and Fastify loggers satisfy Logger', () => {
-    expectTypeOf(pino()).toExtend<Logger>();
-    expectTypeOf<FastifyBaseLogger>().toExtend<Logger>();
   });
 
   test('context.auth is typed and create takes the API input', () => {

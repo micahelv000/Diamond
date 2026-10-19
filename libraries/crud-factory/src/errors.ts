@@ -28,7 +28,7 @@ export class ConflictError extends CrudFactoryError {
   /**
    * @param message The message sent to the client. Defaults to `'Resource already exists'`.
    * @param options `constraint` is the violated database constraint, sent to the client.
-   *   `cause` is the original error, kept for logs.
+   *   `cause` is the original error, kept for debugging.
    */
   constructor(message = 'Resource already exists', options: { constraint?: string; cause?: unknown } = {}) {
     super('CONFLICT', 409, message, options);

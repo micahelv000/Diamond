@@ -9,7 +9,7 @@ import {
 import { postEntity, userEntity } from '../fixtures/entities.ts';
 import { posts, users } from '../fixtures/schema.ts';
 import { useTestDb } from '../helpers/db.ts';
-import { as, captureLogs, useServer, type TestUser } from '../helpers/server.ts';
+import { as, useServer, type TestUser } from '../helpers/server.ts';
 
 const { db } = useTestDb();
 
@@ -60,10 +60,27 @@ function untyped<T>(value: unknown): T {
 const admin: TestUser = { id: 1, orgId: 10, roles: ['admin'] };
 const newUser = (email: string) => ({ email, name: 'New', orgId: 10 });
 
+// Errors thrown by the routes, captured with an `onError` hook.
+const serverErrors: unknown[] = [];
+
+// The Postgres error codes along an error's `cause` chain.
+function errorCodes(error: unknown): unknown[] {
+  const codes: unknown[] = [];
+  for (let current = error; current instanceof Error; current = current.cause) {
+    if ('code' in current) codes.push(current.code);
+  }
+  return codes;
+}
+
 function routes(transaction: boolean): CrudRoutesOptions<typeof userEntity, TestUser, typeof userService> {
   return {
     service: userService,
     transaction,
+    hooks: {
+      onError: async (_request, _reply, error) => {
+        serverErrors.push(error);
+      },
+    },
     context: (request) => request.user ?? undefined,
     authorize: { '*': requireAuth },
     extend: (scope, { service, serviceContext }) => {
@@ -96,9 +113,7 @@ function routes(transaction: boolean): CrudRoutesOptions<typeof userEntity, Test
   };
 }
 
-const logs = captureLogs();
 const app = useServer({
-  logger: logs.logger,
   register: async (app) => {
     await app.register(crudRoutes(routes(true)), { prefix: '/tx' });
     await app.register(crudRoutes(routes(false)), { prefix: '/nt' });
@@ -156,11 +171,11 @@ describe('rollback', () => {
 });
 
 describe('aborted transactions (25P02)', () => {
-  test('querying after a caught database error is a logged 25P02 500, and nothing commits', async () => {
-    const before = logs.lines.length;
+  test('querying after a caught database error is a 25P02 500, and nothing commits', async () => {
+    serverErrors.length = 0;
     const response = await app().inject({ method: 'POST', url: '/tx/swallow-then-query', headers: as(admin) });
     expect(response.statusCode).toBe(500);
-    expect(logs.lines.slice(before).find((line) => line.msg === 'unhandled error in CRUD route')).toMatchObject({ error: { code: '25P02' } });
+    expect(serverErrors.flatMap(errorCodes)).toContain('25P02');
     expect(await userEmails()).toEqual(['seed@x.io']);
   });
 
@@ -182,7 +197,7 @@ describe('hook order and arguments', () => {
     const response = await requestFor('afterCreate', '/tx');
     expect(response.statusCode).toBe(201);
     expect(callNames()).toEqual(['beforeCreate', 'afterCreate']);
-    expect(calls[0]?.args).toMatchObject({ input: newUser('new@x.io'), context: { auth: admin, tx: expect.any(Object), log: expect.any(Object) } });
+    expect(calls[0]?.args).toMatchObject({ input: newUser('new@x.io'), context: { auth: admin, tx: expect.any(Object) } });
     expect(calls[0]?.args.context).toMatchObject({ scope: undefined });
     expect(calls[1]?.args).toMatchObject({ input: newUser('new@x.io'), row: { id: 2, email: 'new@x.io' } });
     expect(calls[1]?.args.row).not.toHaveProperty('passwordHash');
@@ -219,7 +234,7 @@ describe('hook order and arguments', () => {
     const created = await userService.repository.create({ ...newUser('direct@x.io'), passwordHash: 'h' });
     await userService.repository.update(created.id, { name: 'Direct' });
     await userService.repository.delete(created.id);
-    await userService.findByStatus('invited', { log: logs.logger });
+    await userService.findByStatus('invited', {});
     expect(calls).toEqual([]);
   });
 });

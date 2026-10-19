@@ -254,56 +254,24 @@ describe('open CRUD routes', () => {
     expect((await app().inject({ method: 'GET', url: `/users/${hiddenCreate}` })).statusCode).toBe(200);
   });
 
-  test('an unmapped database error is a generic 500, logged without its parameters', async () => {
-    const before = logs.lines.length;
+  test('an unmapped database error is a generic 500 that hides its details', async () => {
     const response = await app().inject({ method: 'GET', url: '/users/boom' });
     expect(response.statusCode).toBe(500);
     expect(response.json()).toEqual({ code: 'INTERNAL_SERVER_ERROR', message: 'Internal Server Error' });
-    const requestLogs = logs.lines.slice(before);
-    const logged = requestLogs.find((line) => line.msg === 'unhandled error in CRUD route');
-    expect(logged).toMatchObject({ level: 50, reqId: expect.any(String), error: { code: '22P02', stack: expect.any(String) } });
-    expect(JSON.stringify(requestLogs)).not.toContain('top-secret-value');
+    expect(response.body).not.toContain('top-secret-value');
   });
 
-  test('warns once at registration when there is no authorize', () => {
-    const warnings = logs.lines.filter((line) => line.msg === '/users routes registered without authorize');
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatchObject({ level: 40 });
-  });
-
-  test('service debug logs go through request.log', async () => {
+  test('the library writes no log lines of its own, only Fastify does', async () => {
+    const before = logs.lines.length;
     const id = await seedUser(app());
     await app().inject({ method: 'GET', url: `/users/${id}` });
-    const serviceLog = logs.lines.find((line) => line.op === 'findById' && line.id === id);
-    expect(serviceLog).toMatchObject({ level: 20, entity: 'users', reqId: expect.any(String) });
-  });
-
-  test('logs the validated request body at debug by default', async () => {
-    const before = logs.lines.length;
-    await app().inject({ method: 'POST', url: '/users', payload: { ...newUser(), unknownField: 'dropped' } });
-    const bodyLog = logs.lines.slice(before).find((line) => line.msg === 'request body');
-    expect(bodyLog).toMatchObject({ level: 20, reqId: expect.any(String), body: { email: expect.any(String) } });
-    // It runs after validation, so fields the schema doesn't accept never reach the log.
-    expect(JSON.stringify(bodyLog)).not.toContain('unknownField');
-  });
-
-  test('requests without a body log no body line', async () => {
-    const before = logs.lines.length;
     await app().inject({ method: 'GET', url: '/users' });
-    expect(logs.lines.slice(before).some((line) => line.msg === 'request body')).toBe(false);
-  });
-});
-
-describe('logRequestBody: false', () => {
-  const logs = captureLogs();
-  const app = useServer({
-    logger: logs.logger,
-    register: (app) => app.register(crudRoutes({ service: userService, logRequestBody: false }), { prefix: '/users' }),
-  });
-
-  test('turns the body log off', async () => {
-    await app().inject({ method: 'POST', url: '/users', payload: newUser() });
-    expect(logs.lines.some((line) => line.msg === 'request body')).toBe(false);
+    await app().inject({ method: 'PATCH', url: `/users/${id}`, payload: { name: 'Bo' } });
+    await app().inject({ method: 'DELETE', url: `/users/${id}` });
+    await app().inject({ method: 'GET', url: '/users/999' });
+    await app().inject({ method: 'GET', url: '/users/boom' });
+    const messages = new Set(logs.lines.slice(before).map((line) => line.msg));
+    expect([...messages].sort()).toEqual(['incoming request', 'request completed']);
   });
 });
 
@@ -536,7 +504,6 @@ describe('crudPublic and tagged custom routes', () => {
     userId: context.auth?.id ?? null,
     scoped: context.scope !== undefined,
     inTransaction: context.tx !== undefined,
-    hasLogger: typeof context.log.debug === 'function',
   });
   const app = useServer({
     register: async (app) => {
@@ -573,7 +540,7 @@ describe('crudPublic and tagged custom routes', () => {
 
     const anonymous = await app().inject({ method: 'GET', url: '/posts/public' });
     expect(anonymous.statusCode).toBe(200);
-    expect(anonymous.json()).toEqual({ userId: null, scoped: false, inTransaction: true, hasLogger: true, visiblePosts: 2 });
+    expect(anonymous.json()).toEqual({ userId: null, scoped: false, inTransaction: true, visiblePosts: 2 });
 
     // Even a signed-in caller gets no user and no scope on a public route.
     const signedIn = await app().inject({ method: 'GET', url: '/posts/public', headers: as(bob) });
@@ -584,7 +551,7 @@ describe('crudPublic and tagged custom routes', () => {
     expect((await app().inject({ method: 'GET', url: '/posts/tagged' })).statusCode).toBe(401);
     const response = await app().inject({ method: 'GET', url: '/posts/tagged', headers: as(bob) });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ userId: bob.id, scoped: true, inTransaction: true, hasLogger: true });
+    expect(response.json()).toEqual({ userId: bob.id, scoped: true, inTransaction: true });
   });
 
   test('the auto HEAD route of a tagged GET route runs authorize too', async () => {
@@ -622,9 +589,7 @@ describe('a ConflictError thrown by business code', () => {
 });
 
 describe('operations.only and authorize without context', () => {
-  const logs = captureLogs();
   const app = useServer({
-    logger: logs.logger,
     register: (app) =>
       app.register(crudRoutes({ service: userService, authorize: { '*': requireAuth }, operations: { only: ['get'] } }), {
         prefix: '/users',
@@ -635,10 +600,5 @@ describe('operations.only and authorize without context', () => {
     expect((await app().inject({ method: 'GET', url: '/users/1', headers: as(alice) })).statusCode).toBe(401);
     expect((await app().inject({ method: 'GET', url: '/users', headers: as(alice) })).statusCode).toBe(404);
     expect((await app().inject({ method: 'POST', url: '/users', headers: as(alice), payload: newUser() })).statusCode).toBe(404);
-  });
-
-  test('warns that every request is anonymous', () => {
-    const warning = logs.lines.find((line) => typeof line.msg === 'string' && line.msg.includes('no context'));
-    expect(warning).toMatchObject({ level: 40, msg: '/users routes have authorize but no context: every request is anonymous (401)' });
   });
 });
