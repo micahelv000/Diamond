@@ -69,16 +69,12 @@ const repo = createRepository(db, itemEntity);
 const capped = createRepository(db, cappedEntity);
 const vendorRepo = createRepository(db, defineEntity(vendors, { primaryKey: 'id', softDelete: false }));
 const eventRepo = createRepository(db, defineEntity(events, { primaryKey: 'id', softDelete: false }));
-// A custom query built the documented way: visible columns, through `scoped(options)`.
-const extended = repo.extend(({ scoped, table, project }) => ({
-  listRaw: (options: QueryOptions = {}) => {
-    const query = scoped(options);
-    return query.run(query.db.select(project()).from(table).where(query.where()).orderBy(asc(table.id)));
-  },
-  setNegativeQty: (id: number) => {
-    const query = scoped();
-    return query.run(query.db.update(table).set({ qty: -1 }).where(query.where(eq(table.id, id))));
-  },
+// A custom query built the documented way: visible columns, through `scoped`.
+const extended = repo.extend(({ scoped, table, columns }) => ({
+  listRaw: (options: QueryOptions = {}) =>
+    scoped(options, ({ database, visible }) => database.select(columns()).from(table).where(visible()).orderBy(asc(table.id))),
+  setNegativeQty: (id: number) =>
+    scoped({}, ({ database, visible }) => database.update(table).set({ qty: -1 }).where(visible(eq(table.id, id)))),
   failWithNotFound: async () => {
     throw new NotFoundError('custom');
   },
@@ -212,7 +208,7 @@ describe('scope applies to every method', () => {
       expect(await rejection(repo.delete(1, { scope: tenant2 }))).toBeInstanceOf(NotFoundError);
       expect(await repo.findById(1)).not.toBeNull();
     }],
-    ['an extend query using scoped().where', async () => expect(ids(await extended.listRaw({ scope: tenant2 }))).toEqual([4, 5])],
+    ['an extend query using the where from scoped', async () => expect(ids(await extended.listRaw({ scope: tenant2 }))).toEqual([4, 5])],
   ])('%s', async (_label, check) => {
     await check();
   });
@@ -229,7 +225,7 @@ describe('soft delete applies to every path', () => {
     ['a finder skips the row', async () => expect(ids((await repo.findByNameContaining('Deleted')).items)).toEqual([])],
     ['update is a NotFoundError', async () => expect(await rejection(repo.update(6, { name: 'back' }))).toBeInstanceOf(NotFoundError)],
     ['deleting again is a NotFoundError', async () => expect(await rejection(repo.delete(6))).toBeInstanceOf(NotFoundError)],
-    ['an extend query using scoped().where skips the row', async () => expect(ids(await extended.listRaw())).not.toContain(6)],
+    ['an extend query using the where from scoped skips the row', async () => expect(ids(await extended.listRaw())).not.toContain(6)],
     ['the unique constraint still sees the kept row', async () => {
       expect(await rejection(repo.create({ sku: 'A6', name: 'again' }))).toBeInstanceOf(ConflictError);
     }],
@@ -256,7 +252,7 @@ describe('hidden columns', () => {
     expect(await repo.findById(1, { columns: untyped<readonly 'name'[]>(['secret', 'name']) })).toEqual({ name: 'Alpha' });
   });
 
-  test("extend's project() leaves the hidden column out", async () => {
+  test("extend's columns() leaves the hidden column out", async () => {
     expect(Object.keys((await extended.listRaw())[0] ?? {})).not.toContain('secret');
   });
 });

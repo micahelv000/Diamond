@@ -311,49 +311,47 @@ stored on `request.crudContext` (`{ auth, scope }`).
 
 | Layer | How | Use it for |
 |---|---|---|
-| Repository | `createRepository(db, entity).extend(({ scoped, table, project, orderBy }) => ({ … }))` | joins, window functions, reports. Base methods, finders included, can't be overridden (compile error). |
+| Repository | `createRepository(db, entity).extend(({ scoped, table, columns, orderBy }) => ({ … }))` | joins, window functions, reports. Base methods, finders included, can't be overridden (compile error). |
 | Service | `createService(repo, { hooks: { beforeCreate, afterCreate, … } })` | stamping `createdBy`/`orgId` from `context.auth`, hashing, normalising input, blocking a delete, follow-up writes. See [Service hooks](#service-hooks). |
 | Service | `createService(repo).extend((base) => ({ … }))` | business operations built from the CRUD methods (`delayFlight`, a two-leg booking). Built-in names can't be reused (compile error). |
 | Routes | `crudRoutes({ …, extend: (scope, { service, entity, serviceContext }) => { … } })` | custom endpoints that share the validation, error handler and authorization. |
 
 A custom query takes the caller's `QueryOptions` and reaches the database only through
-`scoped(options)`, which returns:
+`scoped(options, buildQuery)`. It calls `buildQuery` with two tools, runs the query it returns, and maps
+database errors like the built-in methods, including errors thrown while the query is being built:
 
-- `db`: the database to build the query on. It is the caller's `transaction` when given, so the query joins
-  the request's [transaction](#transactions).
-- `where(condition?)`: the full WHERE: soft delete and the caller's permission scope, ANDed with your
+- `database`: the database to build the query on. It is the caller's `transaction` when given, so the query
+  joins the request's [transaction](#transactions).
+- `visible(condition?)`: the rows the caller may see (not soft-deleted, within their permission scope), ANDed with your
   condition.
-- `run(query)`: runs the query and maps database errors, like the built-in methods.
+
+Pass `{}` as the options when there are none.
 
 Order a list with `orderBy(sort)`: the caller's sort, else `defaultSort`, ending with the primary key,
 like `findMany`:
 
 ```ts
-const userRepo = createRepository(db, userEntity).extend(({ scoped, table, project, orderBy }) => ({
-  withPostCounts: (options: QueryOptions = {}) => {
-    const query = scoped(options);
-    return query.run(
-      query.db
-        .select({ ...project(['id', 'name']), postCount: count(posts.id) })
+const userRepo = createRepository(db, userEntity).extend(({ scoped, table, columns, orderBy }) => ({
+  withPostCounts: (options: QueryOptions = {}) =>
+    scoped(options, ({ database, visible }) =>
+      database
+        .select({ ...columns(['id', 'name']), postCount: count(posts.id) })
         .from(table)
         .leftJoin(posts, eq(posts.authorId, table.id))
-        .where(query.where())
-        .groupBy(table.id),
-    );
-  },
-  findActive: async ({ sort, ...options }: QueryOptions & { sort?: readonly SortSpec<typeof userEntity>[] } = {}) => {
-    const query = scoped(options);
-    return query.run(query.db.select(project()).from(table).where(query.where(eq(table.status, 'active'))).orderBy(...orderBy(sort)));
-  },
+        .where(visible())
+        .groupBy(table.id)),
+  findActive: ({ sort, ...options }: QueryOptions & { sort?: readonly SortSpec<typeof userEntity>[] } = {}) =>
+    scoped(options, ({ database, visible }) =>
+      database.select(columns()).from(table).where(visible(eq(table.status, 'active'))).orderBy(...orderBy(sort))),
 }));
 ```
 
 A query that must deliberately see past the caller's scope, like a check for clashes with rows the
-caller can't see, passes `scoped({ ...options, scope: undefined })`. Soft delete still applies. Code
+caller can't see, passes `{ ...options, scope: undefined }` to `scoped`. Soft delete still applies. Code
 outside `extend` can still use the public `repository.db`.
 
 - **Error mapping is automatic.** When a method you add returns a promise (any `async` method, or one
-  that returns `query.run(…)`) and it rejects, the error goes through the same mapping as the base methods.
+  that returns `scoped(…)`) and it rejects, the error goes through the same mapping as the base methods.
   A unique violation becomes a `ConflictError` (409), a missing foreign key a `BadRequestError` (400),
   not a 500. A method that returns a query builder without running it is passed through unchanged.
 
@@ -472,7 +470,7 @@ custom route with several writes all-or-nothing.
 `serviceContext(request)` carries the transaction (`context.transaction`), so pass it to every call in the route:
 other entities' services, `service.repository` methods, and your own helpers. Service hooks get the
 same `context`, so a write in `beforeCreate` joins it too, and a throwing `afterCreate` rolls back the insert. Custom repository methods join it too when
-they take the `context` and build on `scoped(context)` (see [Extension points](#extension-points)).
+they take the `context` and pass it to `scoped` (see [Extension points](#extension-points)).
 
 ```ts
 scope.post('/rotation', { config: { crudOperation: 'create' }, schema: { body } }, async (request, reply) => {

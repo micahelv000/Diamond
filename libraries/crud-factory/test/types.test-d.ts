@@ -139,23 +139,20 @@ describe('chained extend', () => {
 });
 
 describe('internals.scoped', () => {
-  test('run resolves to the query result type', () => {
+  test('scoped resolves to the query result type', () => {
     const extended = repository.extend(({ scoped, table }) => ({
-      ids: () => {
-        const query = scoped();
-        return query.run(query.db.select({ id: table.id }).from(table));
-      },
+      ids: () => scoped({}, ({ database, visible }) => database.select({ id: table.id }).from(table).where(visible())),
     }));
     expectTypeOf(extended.ids).returns.resolves.toEqualTypeOf<{ id: number }[]>();
   });
 
   test('the raw database, baseWhere and run are no longer reachable from extend', () => {
     repository.extend((internals) => {
-      // @ts-expect-error -- use scoped(options).db, which joins the caller's transaction
+      // @ts-expect-error -- use the database scoped gives, which joins the caller's transaction
       void internals.db;
-      // @ts-expect-error -- use scoped(options).where, which always applies soft delete and scope
+      // @ts-expect-error -- use the where scoped gives, which always applies soft delete and scope
       void internals.baseWhere;
-      // @ts-expect-error -- use scoped(options).run, which logs through the caller's logger
+      // @ts-expect-error -- scoped runs the query itself, mapping its errors
       void internals.run;
       return {};
     });

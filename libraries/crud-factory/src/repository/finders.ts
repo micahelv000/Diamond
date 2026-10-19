@@ -1,7 +1,7 @@
 import { and, type SQL } from 'drizzle-orm';
 import { BadRequestError } from '../errors.ts';
 import type { AnyEntity, FilterOperator, FinderSuffix } from '../types.ts';
-import { visibleColumns } from './projection.ts';
+import { visibleColumns } from './visible-columns.ts';
 import { filterToSql, whereToSql } from './utils.ts';
 
 // Typed as `FinderSuffix` so these runtime names can't drift from the type-level ones.

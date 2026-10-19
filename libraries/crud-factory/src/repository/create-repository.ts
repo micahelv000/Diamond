@@ -7,10 +7,10 @@ import type {
 } from '../types.ts';
 import { withExtend } from '../extend.ts';
 import { buildFinders, typedFinders, type FinderMethods } from './finders.ts';
-import { pickFields, selection, typedColumns, typedRows, visibleColumns, type ColumnMap } from './projection.ts';
+import { pickFields, selection, typedColumns, typedRows, visibleColumns, type ColumnMap } from './visible-columns.ts';
 import { createKeyset } from './cursor.ts';
 import { orderBy, sortKeys, type SortKey } from './sort.ts';
-import type { CrudRepository, CrudRepositoryBase, CrudRepositoryMethods, RepositoryInternals, ScopedQuery } from './types.ts';
+import type { CrudRepository, CrudRepositoryBase, CrudRepositoryMethods, RepositoryInternals } from './types.ts';
 import { whereToSql } from './utils.ts';
 
 async function withErrorMapping<R>(query: () => Promise<R>): Promise<R> {
@@ -180,16 +180,17 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
       }),
   };
 
-  const scoped = (options: QueryOptions = {}): ScopedQuery => ({
-    db: executorFor(options),
-    where: (condition) => and(baseWhere(options.scope), condition),
-    run: (query) => withErrorMapping(async () => query),
-  });
+  const scoped: RepositoryInternals<E>['scoped'] = (options, buildQuery) =>
+    withErrorMapping(async () =>
+      buildQuery({
+        database: executorFor(options),
+        visible: (condition) => and(baseWhere(options.scope), condition),
+      }));
 
   const internals: RepositoryInternals<E> = {
     scoped,
     table: entity.table,
-    project: (keys) => typedColumns(selection(visible, keys)),
+    columns: (keys) => typedColumns(selection(visible, keys)),
     orderBy: sortBy,
   };
 

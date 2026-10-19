@@ -1,7 +1,7 @@
 import { asc, desc, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { BadRequestError } from '../errors.ts';
-import type { ColumnMap } from './projection.ts';
+import type { ColumnMap } from './visible-columns.ts';
 
 /** One ORDER BY column: its key, its drizzle column and its direction. */
 export interface SortKey {

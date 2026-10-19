@@ -19,18 +19,19 @@ import type {
 /** The tools `.extend()` provides for writing custom queries. */
 export interface RepositoryInternals<E extends AnyEntity> {
   /**
-   * The way to reach the database from a custom query. Pass the caller's options, and the returned
-   * `db`, `where` and `run` apply its transaction and scope, plus soft delete, the same way
-   * the built-in methods do.
+   * The way to reach the database from a custom query. Pass the caller's options and a function that
+   * builds the query from the `database` and `visible` it is given. They apply the caller's transaction and
+   * scope, plus soft delete, the same way the built-in methods do. Building and running both happen inside
+   * the error mapping, so the result is the query's rows, with database errors mapped like the built-in methods.
    */
-  scoped(options?: QueryOptions): ScopedQuery;
+  scoped<R>(options: QueryOptions, buildQuery: (tools: ScopedTools) => PromiseLike<R>): Promise<R>;
   /** The entity's drizzle table, for building queries and referencing its columns. */
   table: E['table'];
   /**
    * The table's visible columns, ready to spread into a `select`.
    * Pass column names to pick only some of them.
    */
-  project<K extends VisibleKey<E> = VisibleKey<E>>(keys?: readonly K[]): Pick<E['table']['_']['columns'], K>;
+  columns<K extends VisibleKey<E> = VisibleKey<E>>(keys?: readonly K[]): Pick<E['table']['_']['columns'], K>;
   /**
    * The ORDER BY clauses for `sort`, or for the entity's `defaultSort` when omitted, always ending with
    * the primary key. Only visible columns can be sorted on; any other key throws `BadRequestError`.
@@ -38,17 +39,15 @@ export interface RepositoryInternals<E extends AnyEntity> {
   orderBy(sort?: readonly SortSpec<E>[]): SQL[];
 }
 
-/** The database tools for one call, from `scoped(options)`. */
-export interface ScopedQuery {
+/** What `scoped` gives the function that builds a custom query. */
+export interface ScopedTools {
   /** The database to build the query on: the caller's `transaction` when given, so the query joins its transaction. */
-  db: Database;
+  database: Database;
   /**
-   * The full WHERE condition: rows that are not soft-deleted and match the caller's `scope`, ANDed
+   * The condition for the rows the caller may see: not soft-deleted and matching its `scope`, ANDed
    * with `condition` when given.
    */
-  where(condition?: SQL): SQL | undefined;
-  /** Runs a query and returns its result, mapping database errors like the built-in methods do. */
-  run<R>(query: PromiseLike<R>): Promise<R>;
+  visible(condition?: SQL): SQL | undefined;
 }
 
 /** The built-in repository: the entity, its database, the CRUD methods and the generated finders, without `.extend()`. */

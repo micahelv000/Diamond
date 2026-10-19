@@ -44,10 +44,8 @@ describe('crudRoutes types', () => {
 
   test('extend sees service.repository with its custom methods, and TContext is still inferred', () => {
     const extendedRepo = repository.extend(({ scoped, table }) => ({
-      idsByName: (name: string, options: QueryOptions = {}) => {
-        const query = scoped(options);
-        return query.run(query.db.select({ id: table.id }).from(table).where(query.where(eq(table.name, name))));
-      },
+      idsByName: (name: string, options: QueryOptions = {}) =>
+        scoped(options, ({ database, visible }) => database.select({ id: table.id }).from(table).where(visible(eq(table.name, name)))),
     }));
     crudRoutes({
       service: createService(extendedRepo),

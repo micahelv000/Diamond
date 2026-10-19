@@ -171,11 +171,9 @@ describe('findMany', () => {
   });
 
   test('internals.orderBy gives a custom query the caller\'s sort, else defaultSort, with the primary key last', async () => {
-    const repository = createRepository(db, userEntity).extend(({ scoped, table, project, orderBy }) => ({
-      listNames: async ({ sort, ...options }: QueryOptions & { sort?: readonly SortSpec<typeof userEntity>[] } = {}) => {
-        const query = scoped(options);
-        return query.run(query.db.select(project(['name'])).from(table).where(query.where()).orderBy(...orderBy(sort)));
-      },
+    const repository = createRepository(db, userEntity).extend(({ scoped, table, columns, orderBy }) => ({
+      listNames: ({ sort, ...options }: QueryOptions & { sort?: readonly SortSpec<typeof userEntity>[] } = {}) =>
+        scoped(options, ({ database, visible }) => database.select(columns(['name'])).from(table).where(visible()).orderBy(...orderBy(sort))),
       clauses: orderBy,
     }));
     // No sort: defaultSort ('-createdAt').
@@ -328,18 +326,16 @@ describe('transactions', () => {
 });
 
 describe('extend', () => {
-  test('a join query through scoped(options) hides soft-deleted rows and rows outside the scope', async () => {
-    const repository = createRepository(db, userEntity).extend(({ scoped, table, project }) => ({
-      findWithPostCounts: (options: QueryOptions = {}) => {
-        const query = scoped(options);
-        return query.run(query.db
-          .select({ ...project(['id', 'name']), postCount: sql<number>`count(${posts.id})`.mapWith(Number) })
+  test('a join query through scoped hides soft-deleted rows and rows outside the scope', async () => {
+    const repository = createRepository(db, userEntity).extend(({ scoped, table, columns }) => ({
+      findWithPostCounts: (options: QueryOptions = {}) =>
+        scoped(options, ({ database, visible }) => database
+          .select({ ...columns(['id', 'name']), postCount: sql<number>`count(${posts.id})`.mapWith(Number) })
           .from(table)
           .leftJoin(posts, eq(posts.authorId, table.id))
-          .where(query.where())
+          .where(visible())
           .groupBy(table.id)
-          .orderBy(table.id));
-      },
+          .orderBy(table.id)),
     }));
     const author = await repository.create(newUser({ name: 'Author' }));
     const reader = await repository.create(newUser({ name: 'Reader' }));
@@ -362,15 +358,16 @@ describe('extend', () => {
 });
 
 describe('extend safety nets', () => {
-  // Plain `async` methods with no `run`: only the automatic wrapping can map their errors.
-  const rawPosts = createRepository(db, postEntity).extend(({ scoped, table }) => ({
+  // Plain `async` methods that query the database directly instead of through `scoped`: only the
+  // automatic wrapping can map their errors.
+  const rawPosts = createRepository(db, postEntity).extend(() => ({
     insertRaw: async (authorId: number) => {
-      await scoped().db.insert(table).values({ authorId, orgId: 1, title: 'Raw' });
+      await db.insert(posts).values({ authorId, orgId: 1, title: 'Raw' });
     },
   }));
-  const rawUsers = createRepository(db, userEntity).extend(({ scoped, table }) => ({
+  const rawUsers = createRepository(db, userEntity).extend(() => ({
     insertRaw: async (email: string) => {
-      await scoped().db.insert(table).values(newUser({ email }));
+      await db.insert(users).values(newUser({ email }));
     },
   }));
 
@@ -385,18 +382,27 @@ describe('extend safety nets', () => {
     expect(error).toMatchObject({ statusCode: 409, constraint: 'users_email_unique' });
   });
 
-  test('scoped(options).run runs the query and maps errors', async () => {
-    // Called directly, not from an extend method, so the automatic wrapping can't do `run`'s job for it.
-    const repository = createRepository(db, userEntity).extend((internals) => ({ internals: () => internals }));
-    const { scoped, table } = repository.internals();
-    const query = scoped();
-    const created = await repository.create(newUser({ email: 'secret@example.com' }));
+  // Called directly, not from an extend method, so the automatic wrapping can't do `scoped`'s job for it.
+  const internalsOf = () => createRepository(db, userEntity).extend((internals) => ({ internals: () => internals })).internals();
 
-    const ids = await query.run(query.db.select({ id: table.id }).from(table).where(query.where(eq(table.email, 'secret@example.com'))));
+  test('scoped runs the query it is given and maps its errors', async () => {
+    const { scoped, table } = internalsOf();
+    const created = await userRepository.create(newUser({ email: 'secret@example.com' }));
+
+    const ids = await scoped({}, ({ database, visible }) =>
+      database.select({ id: table.id }).from(table).where(visible(eq(table.email, 'secret@example.com'))));
     expect(ids).toEqual([{ id: created.id }]);
 
-    const duplicate = query.run(query.db.insert(table).values(newUser({ email: 'secret@example.com' })));
+    const duplicate = scoped({}, ({ database }) => database.insert(table).values(newUser({ email: 'secret@example.com' })));
     await expect(duplicate).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  test('an error while building the query rejects the promise instead of throwing', async () => {
+    const { scoped, table, orderBy } = internalsOf();
+    // @ts-expect-error -- passwordHash is hidden, so it can't be sorted on
+    const sortOnHidden = () => orderBy(['passwordHash']);
+    const result = scoped({}, ({ database }) => database.select({ id: table.id }).from(table).orderBy(...sortOnHidden()));
+    await expect(result).rejects.toBeInstanceOf(BadRequestError);
   });
 });
 

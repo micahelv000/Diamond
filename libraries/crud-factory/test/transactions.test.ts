@@ -26,11 +26,10 @@ const userService = createService<typeof userEntity, TestUser>(userRepo, {
 const extendedUserService = userService.extend((base) => ({
   rename: (id: number, name: string, context: ServiceContext<TestUser>) => base.update(id, { name }, context),
 }));
-// A custom query that writes through `scoped(options).db`, so it joins whatever transaction the options carry.
+// A custom query that writes through the database `scoped` gives, so it joins whatever transaction the options carry.
 const customUserRepo = userRepo.extend(({ scoped, table }) => ({
   insertDirectly: async (email: string, options: QueryOptions) => {
-    const query = scoped(options);
-    await query.run(query.db.insert(table).values({ ...newUser(email), passwordHash: 'h' }));
+    await scoped(options, ({ database }) => database.insert(table).values({ ...newUser(email), passwordHash: 'h' }));
   },
 }));
 const postService = createService<typeof postEntity, TestUser>(createRepository(db, postEntity), {
