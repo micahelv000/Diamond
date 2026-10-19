@@ -316,10 +316,10 @@ describe('hidden columns', () => {
 });
 
 describe('transactions', () => {
-  test('tx option runs inside the transaction', async () => {
+  test('transaction option runs inside the transaction', async () => {
     await expect(
-      db.transaction(async (tx) => {
-        await userRepository.create(newUser({ name: 'Rolled back' }), { tx });
+      db.transaction(async (transaction) => {
+        await userRepository.create(newUser({ name: 'Rolled back' }), { transaction });
         throw new Error('rollback');
       }),
     ).rejects.toThrow('rollback');

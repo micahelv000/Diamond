@@ -40,7 +40,7 @@ export interface RepositoryInternals<E extends AnyEntity> {
 
 /** The database tools for one call, from `scoped(options)`. */
 export interface ScopedQuery {
-  /** The database to build the query on: the caller's `tx` when given, so the query joins its transaction. */
+  /** The database to build the query on: the caller's `transaction` when given, so the query joins its transaction. */
   db: Database;
   /**
    * The full WHERE condition: rows that are not soft-deleted and match the caller's `scope`, ANDed
@@ -58,7 +58,7 @@ export type CrudRepositoryBase<E extends AnyEntity> = CrudRepositoryMethods<E> &
 export interface CrudRepositoryMethods<E extends AnyEntity> {
   /** The entity this repository was created for. */
   readonly entity: E;
-  /** The database this repository was created with. Use it to open your own transactions and pass `tx` to each call. */
+  /** The database this repository was created with. Use it to open your own transactions and pass `transaction` to each call. */
   readonly db: Database;
   /**
    * Lists rows. `where` takes a typed filter object or a raw `SQL` chunk. Results are sorted by `sort`

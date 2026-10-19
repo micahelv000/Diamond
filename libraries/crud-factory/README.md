@@ -319,7 +319,7 @@ stored on `request.crudContext` (`{ auth, scope }`).
 A custom query takes the caller's `QueryOptions` and reaches the database only through
 `scoped(options)`, which returns:
 
-- `db`: the database to build the query on. It is the caller's `tx` when given, so the query joins
+- `db`: the database to build the query on. It is the caller's `transaction` when given, so the query joins
   the request's [transaction](#transactions).
 - `where(condition?)`: the full WHERE: soft delete and the caller's permission scope, ANDed with your
   condition.
@@ -448,7 +448,7 @@ ones and every `extend` route. If the handler throws, everything the request wro
 the error response is sent as usual; if it succeeds, the transaction commits. This is what makes a
 custom route with several writes all-or-nothing.
 
-`serviceContext(request)` carries the transaction (`context.tx`), so pass it to every call in the route:
+`serviceContext(request)` carries the transaction (`context.transaction`), so pass it to every call in the route:
 other entities' services, `service.repository` methods, and your own helpers. Service hooks get the
 same `context`, so a write in `beforeCreate` joins it too, and a throwing `afterCreate` rolls back the insert. Custom repository methods join it too when
 they take the `context` and build on `scoped(context)` (see [Extension points](#extension-points)).
@@ -472,10 +472,10 @@ scope.post('/rotation', { config: { crudOperation: 'create' }, schema: { body } 
 - The transaction holds one pooled connection for the whole handler, so keep slow work (HTTP calls to
   other services) out of handlers. A query on the root `db` inside a handler runs outside the
   transaction; with a single-connection driver such as PGlite it waits for it forever.
-- To open your own nested scope, call `context.tx.transaction(…)`: drizzle makes it a savepoint.
+- To open your own nested scope, call `context.transaction.transaction(…)`: drizzle makes it a savepoint.
 - Let database errors propagate. A failed statement aborts the transaction, so a handler that catches one
   and still returns gets a success response for writes Postgres rolled back. To recover from a failure,
-  run that statement in a savepoint (`context.tx.transaction(…)`).
+  run that statement in a savepoint (`context.transaction.transaction(…)`).
 
 Turn it off with `crudRoutes({ service, transaction: false })`: each statement then commits on its own,
 as before, and `reply.send()` is allowed.

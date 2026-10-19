@@ -235,7 +235,7 @@ export type RepositoryFinders<E extends AnyEntity> = RepositoryValueFinders<E> &
 /** Per-call database options that every repository method accepts. */
 export interface QueryOptions {
   /** A transaction to run this call in, so several calls succeed or fail together. */
-  tx?: Database;
+  transaction?: Database;
   /**
    * An extra SQL condition that limits which rows this call can read or change. Rows outside it act
    * as if they don't exist. Routes set it from your `authorize` rules.

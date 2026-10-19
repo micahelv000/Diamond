@@ -131,27 +131,27 @@ describe('service finders', () => {
 
 describe('a finder called with undefined', () => {
   // A missing optional query param often arrives as undefined; it must not turn into "match every row".
-  type Call = (tx: Database) => Promise<unknown>;
+  type Call = (transaction: Database) => Promise<unknown>;
   const calls: Record<'repository' | 'service', Record<string, Call>> = {
     repository: {
       // @ts-expect-error -- undefined is not a valid value
-      findByStatus: (tx) => repo.findByStatus(undefined, { tx }),
+      findByStatus: (transaction) => repo.findByStatus(undefined, { transaction }),
       // @ts-expect-error -- undefined is not a valid value
-      findByStatusIn: (tx) => repo.findByStatusIn(undefined, { tx }),
+      findByStatusIn: (transaction) => repo.findByStatusIn(undefined, { transaction }),
       // @ts-expect-error -- undefined is not a valid value
-      'findByCreatedAtBetween (from)': (tx) => repo.findByCreatedAtBetween(undefined, day('2026-03-01'), { tx }),
+      'findByCreatedAtBetween (from)': (transaction) => repo.findByCreatedAtBetween(undefined, day('2026-03-01'), { transaction }),
       // @ts-expect-error -- undefined is not a valid value
-      'findByCreatedAtBetween (to)': (tx) => repo.findByCreatedAtBetween(day('2026-02-01'), undefined, { tx }),
+      'findByCreatedAtBetween (to)': (transaction) => repo.findByCreatedAtBetween(day('2026-02-01'), undefined, { transaction }),
     },
     service: {
       // @ts-expect-error -- undefined is not a valid value
-      findByStatus: (tx) => service.findByStatus(undefined, { tx }),
+      findByStatus: (transaction) => service.findByStatus(undefined, { transaction }),
       // @ts-expect-error -- undefined is not a valid value
-      findByStatusIn: (tx) => service.findByStatusIn(undefined, { tx }),
+      findByStatusIn: (transaction) => service.findByStatusIn(undefined, { transaction }),
       // @ts-expect-error -- undefined is not a valid value
-      'findByCreatedAtBetween (from)': (tx) => service.findByCreatedAtBetween(undefined, day('2026-03-01'), { tx }),
+      'findByCreatedAtBetween (from)': (transaction) => service.findByCreatedAtBetween(undefined, day('2026-03-01'), { transaction }),
       // @ts-expect-error -- undefined is not a valid value
-      'findByCreatedAtBetween (to)': (tx) => service.findByCreatedAtBetween(day('2026-02-01'), undefined, { tx }),
+      'findByCreatedAtBetween (to)': (transaction) => service.findByCreatedAtBetween(day('2026-02-01'), undefined, { transaction }),
     },
   };
 

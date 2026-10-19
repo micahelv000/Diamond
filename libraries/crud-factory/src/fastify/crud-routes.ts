@@ -21,7 +21,7 @@ function alreadyValidated<T>(_schema: z.ZodType<T, unknown>, value: unknown): T 
 declare module 'fastify' {
   interface FastifyRequest {
     /** The request's transaction while a `crudRoutes` handler runs, or `null` otherwise. */
-    crudTx: Database | null;
+    crudTransaction: Database | null;
   }
 }
 
@@ -46,12 +46,12 @@ function assertAuthorizationChoice({ method, url, config }: RouteOptions): void 
   }
 }
 
-// Wraps the handler in a transaction stored on `request.crudTx`.
+// Wraps the handler in a transaction stored on `request.crudTransaction`.
 function wrapHandlerInTransaction(db: Database, routeOptions: RouteOptions): void {
   const { handler } = routeOptions;
   routeOptions.handler = function handleInTransaction(request, reply) {
-    return db.transaction(async (tx) => {
-      request.crudTx = tx;
+    return db.transaction(async (transaction) => {
+      request.crudTransaction = transaction;
       // Sending here would flush the response before COMMIT, so a failed commit would still look like a
       // success. Assigning `send` on this reply object only affects this one request.
       const originalSend = reply.send;
@@ -63,7 +63,7 @@ function wrapHandlerInTransaction(db: Database, routeOptions: RouteOptions): voi
         // Restored before the transaction settles, so Fastify can send the result or the error response.
         reply.send = originalSend;
         // Cleared so later hooks can't write through a finished transaction.
-        request.crudTx = null;
+        request.crudTransaction = null;
       }
     });
   };
@@ -92,17 +92,17 @@ export function crudRoutes<E extends CrudEntity<E>, TContext = undefined, S = Cr
   const { schemas } = service.entity;
 
   const serviceContext = (request: FastifyRequest): ServiceContext<TContext> => {
-    const tx = request.crudTx ?? undefined;
+    const requestTransaction = request.crudTransaction ?? undefined;
     if (request.crudContext) {
       return {
         // Only this scope's preHandler sets `crudContext`, using this scope's `context` mapper,
         // so `auth` is a `TContext`.
         auth: request.crudContext.auth as TContext | undefined,
         scope: request.crudContext.scope,
-        tx,
+        transaction: requestTransaction,
       };
     }
-    if (request.routeOptions.config.crudPublic === true) return { tx };
+    if (request.routeOptions.config.crudPublic === true) return { transaction: requestTransaction };
     // No rule ran, for example on a route outside this scope, so fail rather than run without a row scope.
     throw new Error(`${request.routeOptions.url ?? request.url}: no authorize check ran for this route`);
   };
@@ -129,7 +129,7 @@ export function crudRoutes<E extends CrudEntity<E>, TContext = undefined, S = Cr
       return reply.status(404).send(body);
     });
     if (!instance.hasRequestDecorator('crudContext')) instance.decorateRequest('crudContext', null);
-    if (!instance.hasRequestDecorator('crudTx')) instance.decorateRequest('crudTx', null);
+    if (!instance.hasRequestDecorator('crudTransaction')) instance.decorateRequest('crudTransaction', null);
     instance.addHook('preHandler', createAuthorizationHook({ context, authorize }));
     const addHook = instance.addHook.bind(instance) as (hookName: string, hook: FastifyHook) => void;
     for (const [hookName, hookOrHooks] of Object.entries(hooks)) {

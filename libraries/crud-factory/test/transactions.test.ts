@@ -15,7 +15,7 @@ const userService = createService<typeof userEntity, TestUser>(userRepo, {
     // Writes a row of its own, then fails for one name: the hook's write must be rolled back too.
     beforeCreate: async ({ input, context }) => {
       if (input.name === 'Hook fails') {
-        await userRepo.create({ ...input, email: `audit-${input.email}`, passwordHash: 'h' }, { tx: context.tx });
+        await userRepo.create({ ...input, email: `audit-${input.email}`, passwordHash: 'h' }, { transaction: context.transaction });
         throw new ConflictError('Rejected after a write');
       }
       return { ...input, passwordHash: 'secret-hash' };

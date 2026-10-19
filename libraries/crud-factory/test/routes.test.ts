@@ -70,7 +70,7 @@ describe('open CRUD routes', () => {
             // An unmapped database error: the drizzle message and the driver message both hold the value.
             // On the request's transaction: PGlite has one connection, so `db` would wait for it forever.
             scope.get('/boom', { config: { crudOperation: 'list' } }, (request) =>
-              (request.crudTx ?? db).execute(sql`select ${'top-secret-value'}::int`));
+              (request.crudTransaction ?? db).execute(sql`select ${'top-secret-value'}::int`));
           },
         }),
         { prefix: '/users' },
@@ -503,7 +503,7 @@ describe('crudPublic and tagged custom routes', () => {
   const contextFlags = (context: ServiceContext<TestUser>) => ({
     userId: context.auth?.id ?? null,
     scoped: context.scope !== undefined,
-    inTransaction: context.tx !== undefined,
+    inTransaction: context.transaction !== undefined,
   });
   const app = useServer({
     register: async (app) => {

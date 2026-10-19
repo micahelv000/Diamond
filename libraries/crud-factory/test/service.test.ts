@@ -124,7 +124,7 @@ describe('write hooks', () => {
         },
         beforeDelete: async ({ id, context }) => {
           events.push('beforeDelete');
-          const row = await createRepository(db, userEntity).findById(id, { columns: ['status'], tx: context.tx });
+          const row = await createRepository(db, userEntity).findById(id, { columns: ['status'], transaction: context.transaction });
           if (row?.status === 'active') throw new ConflictError('Active users stay');
         },
         afterDelete: (args) => {

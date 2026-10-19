@@ -34,13 +34,13 @@ export interface ServiceContext<TAuth = unknown> {
   /** An extra SQL condition that limits which rows this call can read or change. Routes set it from the `authorize` rules. */
   scope?: SQL;
   /** A transaction to run this call in, so several calls succeed or fail together. */
-  tx?: Database;
+  transaction?: Database;
 }
 
 /**
  * Functions that run around every create, update and delete made through the service, including custom
  * methods that call `base`. Calls made directly on `service.repository` skip them. Each may be async.
- * When `context.tx` is set, as in routes by default, a hook that throws rolls back the write. Work done outside
+ * When `context.transaction` is set, as in routes by default, a hook that throws rolls back the write. Work done outside
  * the database, such as sending emails or events, can't be rolled back.
  */
 export interface ServiceHooks<E extends AnyEntity, TAuth> {
@@ -61,7 +61,7 @@ export interface ServiceHooks<E extends AnyEntity, TAuth> {
   afterUpdate?(args: { id: PrimaryKeyValue<E>; row: Row<E>; patch: UpdateInput<E>; context: ServiceContext<TAuth> }): void;
   /**
    * Runs before every delete. Throw to block it. It receives only the id; to check the row, read it
-   * with the repository, passing `context.tx` and `context.scope`.
+   * with the repository, passing `context.transaction` and `context.scope`.
    */
   beforeDelete?(args: { id: PrimaryKeyValue<E>; context: ServiceContext<TAuth> }): void;
   /** Runs after every delete succeeds, soft or hard, with the deleted row. Its return value is ignored. */
@@ -166,7 +166,7 @@ export function createService<E extends AnyEntity, TAuth = unknown, R extends Cr
 ): CrudService<E, TAuth, R> {
   const { hooks = {} } = options;
 
-  const queryOptions = (context: ServiceContext<TAuth>): QueryOptions => ({ tx: context.tx, scope: context.scope });
+  const queryOptions = (context: ServiceContext<TAuth>): QueryOptions => ({ transaction: context.transaction, scope: context.scope });
   // Without a hook the input is inserted as-is, so omitted columns must have database defaults.
   // The casts are needed because TypeScript can't relate the two `Omit` types over a generic table.
   const toInsert = async (input: CreateInput<E>, context: ServiceContext<TAuth>): Promise<Insert<E>> =>

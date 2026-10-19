@@ -164,7 +164,7 @@ const baseFlightService = createService<typeof flightEntity, Caller, typeof flig
     beforeUpdate: async ({ id, patch, context }) => {
       // Re-check only when the schedule changes, merging the patch with the stored row.
       if (scheduleKeys.some((key) => patch[key] !== undefined)) {
-        const current = await flightRepo.findById(id, { columns: scheduleKeys, scope: context.scope, tx: context.tx });
+        const current = await flightRepo.findById(id, { columns: scheduleKeys, scope: context.scope, transaction: context.transaction });
         if (!current) throw new NotFoundError('flights not found');
         await assertSchedulable({ ...current, ...patch }, context, id);
       }
@@ -180,7 +180,7 @@ const baseFlightService = createService<typeof flightEntity, Caller, typeof flig
     afterUpdate: ({ row, context }) => context.auth?.log.info({ id: row.id, status: row.status }, 'flight updated'),
     // A flight that has flown stays on record.
     beforeDelete: async ({ id, context }) => {
-      const current = await flightRepo.findById(id, { columns: ['status'], scope: context.scope, tx: context.tx });
+      const current = await flightRepo.findById(id, { columns: ['status'], scope: context.scope, transaction: context.transaction });
       if (current?.status === 'departed' || current?.status === 'landed') throw new ConflictError(`Can't delete a ${current.status} flight`);
     },
   },

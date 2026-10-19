@@ -76,7 +76,7 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
   const softDeleteValues = softDelete ? { [softDelete]: sql`now()` } : undefined;
   const defaultSort = config.defaultSort ? [config.defaultSort] : [];
 
-  const executorFor = (options: QueryOptions): Database => options.tx ?? db;
+  const executorFor = (options: QueryOptions): Database => options.transaction ?? db;
   const baseWhere = (scope?: SQL): SQL | undefined =>
     and(softDeleteColumn ? isNull(softDeleteColumn) : undefined, scope);
   const byId = (id: PrimaryKeyValue<E>, scope?: SQL) => and(eq(primaryColumn, id), baseWhere(scope));
