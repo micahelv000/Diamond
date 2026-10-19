@@ -99,7 +99,7 @@ function show(response: LightMyRequestResponse): void {
 }
 
 show(await userRoutes.list()); // 401: no user
-show(await userRoutes.create({ email: 'ann@x.io', name: 'Ann', orgId: '2' }, as('member'))); // 403: admins only
+show(await userRoutes.create({ email: 'ann@x.io', name: 'Ann', orgId: 20 }, as('member'))); // 403: admins only
 show(await userRoutes.create({ email: 'ann@x.io', name: 'Ann', orgId: 10 }, as('admin')));
 show(await userRoutes.create({ email: 'ann@x.io', name: 'Ann', orgId: 10 }, as('admin'))); // 409: email taken
 show(await userRoutes.list({ name__ilike: 'an', fields: ['id', 'name'] }, as('member')));

@@ -68,7 +68,7 @@ global setup. `examples/users.ts` is a runnable version (`npx tsx examples/users
 | `context?` | `(request) => TCtx \| undefined` (may be async). Maps your auth (e.g. `request.user`) to what rules see. |
 | `authorize?` | Rules per operation (`list`, `get`, `create`, `update`, `delete`) and `'*'`. Without it, routes are open and one startup warning is logged; with it but no `context`, every request is anonymous (also warned). |
 | `operations?` | `{ only?: Operation[] }` or `{ except?: Operation[] }` to register a subset. |
-| `hooks?` | `{ onRequest?, preHandler? }` added to the plugin scope, so they run on generated and `extend` routes (rate limits, metrics…). |
+| `hooks?` | Any Fastify request hook (`onRequest`, `preValidation`, `preHandler`, `onSend`, `onResponse`, `onError`…), an async function or an array of them (no `done` callbacks). Added to the plugin scope, so they run on generated and `extend` routes (rate limits, metrics…). `preHandler` hooks run after `authorize`. |
 | `extend?` | `(scope, { service, entity, serviceContext }) => void` to add custom routes in the same scope. Each needs `config.crudOperation` or `config.crudPublic: true`, or startup fails. See [Extension points](#extension-points). |
 | `transaction?` | Default `true`: each request runs in one database transaction, rolled back if the handler throws. Handlers return their result; `reply.send()` throws. `false` lets each statement commit on its own. See [Transactions](#transactions). |
 
@@ -450,7 +450,8 @@ scope.post('/rotation', { config: { crudOperation: 'create' }, schema: { body } 
 });
 ```
 
-- `authorize` and your `hooks` run before the transaction opens, so a 401 or 403 never starts one.
+- `authorize` and your hooks up to `preHandler` run before the transaction opens, so a 401 or 403 never
+  starts one. Hooks from `preSerialization` on run after it has committed or rolled back.
 - Return the result; set the status and headers with `reply.status()` and `reply.header()`. Calling
   `reply.send()` inside the handler throws, so the request fails with a 500 and rolls back: a response
   sent before the commit would report success even if the commit then failed.

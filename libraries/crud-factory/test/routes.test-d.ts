@@ -154,6 +154,33 @@ describe('crudRoutes types', () => {
     expectTypeOf(service.repository.db).toEqualTypeOf<Database>();
   });
 
+  test('hooks accept every Fastify request hook and nothing else', () => {
+    crudRoutes({
+      service,
+      hooks: {
+        onRequest: async () => {},
+        preParsing: async (_request, _reply, payload) => payload,
+        preValidation: [async () => {}],
+        preHandler: async () => {},
+        preSerialization: async (_request, _reply, payload) => payload,
+        onSend: async (_request, _reply, payload) => payload,
+        onResponse: async () => {},
+        onTimeout: async () => {},
+        onError: async () => {},
+        onRequestAbort: async () => {},
+      },
+    });
+    // @ts-expect-error -- `onReady` is an application hook, not a request hook
+    crudRoutes({ service, hooks: { onReady: async () => {} } });
+    // An async hook that also takes Fastify's `done` callback would be refused at startup, so it is a type error.
+    // @ts-expect-error -- `done` is not allowed in an async hook
+    crudRoutes({ service, hooks: { onRequest: async (_request, _reply, _done) => {} } });
+    // @ts-expect-error -- `done` is not allowed in an async hook
+    crudRoutes({ service, hooks: { onSend: async (_request, _reply, _payload, _done) => {} } });
+    // @ts-expect-error -- a hook that doesn't return a promise would never finish without `done`
+    crudRoutes({ service, hooks: { onRequest: (_request: unknown) => undefined } });
+  });
+
   describe('route methods', () => {
     const routes = crudRoutes({ service });
 

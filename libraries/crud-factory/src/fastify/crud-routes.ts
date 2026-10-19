@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest, RouteOptions } from 'fastify';
+import type { LifecycleHook, LifecycleHookAsyncLookup } from 'fastify/types/hooks.js';
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { z } from 'zod';
 import type { Operation } from '../auth/types.ts';
@@ -69,6 +70,10 @@ function wrapHandlerInTransaction(db: Database, routeOptions: RouteOptions): voi
   };
 }
 
+/** Any of Fastify's async request hooks, and the arguments Fastify calls one with. */
+type FastifyHook = LifecycleHookAsyncLookup<LifecycleHook>;
+type FastifyHookArguments = Parameters<FastifyHook>;
+
 /**
  * The plugin `crudRoutes` returns. Register it with a prefix, then call its routes directly with
  * `create`, `update`, `get`, `list` and `delete`, whose bodies and queries are checked at compile time.
@@ -135,9 +140,14 @@ export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudSe
       });
     }
     instance.addHook('preHandler', createAuthorizationHook({ context, authorize }));
-    // Added on the scope so they also run on `extend` routes, after authorization.
-    for (const hook of [hooks.onRequest ?? []].flat()) instance.addHook('onRequest', hook);
-    for (const hook of [hooks.preHandler ?? []].flat()) instance.addHook('preHandler', hook);
+    const addHook = instance.addHook.bind(instance) as (hookName: string, hook: FastifyHook) => void;
+    for (const [hookName, hookOrHooks] of Object.entries(hooks)) {
+      for (const userHook of [hookOrHooks ?? []].flat()) {
+        addHook(hookName, function forwardToUserHook(this: FastifyInstance, ...hookArguments: FastifyHookArguments) {
+          return Reflect.apply(userHook, this, hookArguments);
+        });
+      }
+    }
 
     const where = instance.prefix || '/';
     if (!authorize) instance.log.warn(`${where} routes registered without authorize`);

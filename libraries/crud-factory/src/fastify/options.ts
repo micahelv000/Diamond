@@ -5,8 +5,9 @@ import type {
   RawReplyDefaultExpression,
   RawRequestDefaultExpression,
   RawServerDefault,
-  RouteShorthandOptions,
 } from 'fastify';
+// Fastify's request hook names and their async handler types. They aren't re-exported from 'fastify'.
+import type { LifecycleHook, LifecycleHookAsyncLookup } from 'fastify/types/hooks.js';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { AuthorizeMap, Operation } from '../auth/types.ts';
 import type { CrudService, CrudServiceMethods, ServiceContext } from '../service/create-service.ts';
@@ -49,13 +50,14 @@ export interface OperationsConfig {
   except?: readonly Operation[];
 }
 
-/** Fastify hooks added to every route. */
-export interface CrudHooksConfig {
-  /** Runs first, before the body is read or validated. */
-  onRequest?: RouteShorthandOptions['onRequest'];
-  /** Runs after validation and the `authorize` check, right before the handler. */
-  preHandler?: RouteShorthandOptions['preHandler'];
-}
+/**
+ * Fastify request hooks added to every route here, each one an async function or an array of them. The names
+ * and types come from Fastify. Only async hooks are accepted: with Fastify's `done` callback style, a hook that
+ * takes the wrong arguments type-checks but fails at startup. `preHandler` hooks run after the `authorize` check.
+ */
+export type CrudHooksConfig = {
+  [K in LifecycleHook]?: LifecycleHookAsyncLookup<K> | readonly LifecycleHookAsyncLookup<K>[];
+};
 
 /** Options for `crudRoutes`. Only `service` is required, and `S` is usually inferred. */
 export interface CrudRoutesOptions<E extends CrudEntity<E>, TCtx, S = CrudService<E, TCtx>> {

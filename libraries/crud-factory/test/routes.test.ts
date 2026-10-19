@@ -389,6 +389,7 @@ describe('authorization', () => {
 });
 
 describe('operations, hooks and extend', () => {
+  let responsesSeen = 0;
   const app = useServer({
     register: (app) =>
       app.register(
@@ -401,8 +402,20 @@ describe('operations, hooks and extend', () => {
             onRequest: async (_request, reply) => {
               reply.header('x-on-request', 'yes');
             },
-            preHandler: async (_request, reply) => {
-              reply.header('x-pre-handler', 'yes');
+            preValidation: async (_request, reply) => {
+              reply.header('x-pre-validation', 'yes');
+            },
+            preHandler: [
+              async (_request, reply) => {
+                reply.header('x-pre-handler', 'yes');
+              },
+            ],
+            onSend: async (_request, reply, payload) => {
+              reply.header('x-on-send', 'yes');
+              return payload;
+            },
+            onResponse: async () => {
+              responsesSeen += 1;
             },
           },
           extend: (scope, { service, entity, serviceContext }) => {
@@ -435,8 +448,14 @@ describe('operations, hooks and extend', () => {
     ];
     for (const response of responses) {
       expect(response.statusCode).toBe(200);
-      expect(response.headers).toMatchObject({ 'x-on-request': 'yes', 'x-pre-handler': 'yes' });
+      expect(response.headers).toMatchObject({
+        'x-on-request': 'yes',
+        'x-pre-validation': 'yes',
+        'x-pre-handler': 'yes',
+        'x-on-send': 'yes',
+      });
     }
+    expect(responsesSeen).toBeGreaterThanOrEqual(2);
   });
 
   test('a custom route inherits authorization and the error handler', async () => {
