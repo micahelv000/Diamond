@@ -154,19 +154,29 @@ async function assertSchedulable(plan: Schedule, context: ServiceContext<Caller>
   if (clash) throw new ConflictError(`Aircraft is already flying ${clash.flightNumber} then`);
 }
 
-// The third type argument keeps the custom queries typed on `service.repository`.
-const baseFlightService = createService<typeof flightEntity, Caller, typeof flightRepo>(flightRepo, {
+// What a write's before hook hands to its after hook: here, the status a flight had before an update.
+interface FlightHookState { previousStatus?: Flight['status'] }
+
+// The third type argument keeps the custom queries typed on `service.repository`; the fourth is the hook state.
+const baseFlightService = createService<typeof flightEntity, Caller, typeof flightRepo, FlightHookState>(flightRepo, {
+  // A new state object for every create, update and delete.
+  state: () => ({}),
   hooks: {
     beforeCreate: async ({ input, context }) => {
       await assertSchedulable(input, context);
       return input;
     },
-    beforeUpdate: async ({ id, patch, context }) => {
+    beforeUpdate: async ({ id, patch, context, state }) => {
       // Re-check only when the schedule changes, merging the patch with the stored row.
       if (scheduleKeys.some((key) => patch[key] !== undefined)) {
         const current = await flightRepo.findById(id, { columns: scheduleKeys, scope: context.scope, transaction: context.transaction });
         if (!current) throw new NotFoundError('flights not found');
         await assertSchedulable({ ...current, ...patch }, context, id);
+      }
+      // Remember the old status, so afterUpdate can log the change.
+      if (patch.status !== undefined) {
+        const before = await flightRepo.findById(id, { columns: ['status'], scope: context.scope, transaction: context.transaction });
+        state.previousStatus = before?.status;
       }
       // Status changes set the actual times unless the client sent them.
       const now = new Date();
@@ -177,7 +187,8 @@ const baseFlightService = createService<typeof flightEntity, Caller, typeof flig
       };
     },
     afterCreate: ({ row, context }) => context.auth?.log.info({ id: row.id }, 'flight scheduled'),
-    afterUpdate: ({ row, context }) => context.auth?.log.info({ id: row.id, status: row.status }, 'flight updated'),
+    afterUpdate: ({ row, context, state }) =>
+      context.auth?.log.info({ id: row.id, from: state.previousStatus, to: row.status }, 'flight updated'),
     // A flight that has flown stays on record.
     beforeDelete: async ({ id, context }) => {
       const current = await flightRepo.findById(id, { columns: ['status'], scope: context.scope, transaction: context.transaction });

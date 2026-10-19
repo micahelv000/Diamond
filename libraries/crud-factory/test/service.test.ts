@@ -1,6 +1,6 @@
 import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, test } from 'vitest';
-import { ConflictError, createRepository, createService, NotFoundError, type ServiceContext } from '../src/index.ts';
+import { ConflictError, createRepository, createService, NotFoundError, type CrudRepository, type ServiceContext } from '../src/index.ts';
 import { postEntity, userEntity } from './fixtures/entities.ts';
 import { posts, users } from './fixtures/schema.ts';
 import { useTestDb } from './helpers/db.ts';
@@ -142,7 +142,7 @@ describe('write hooks', () => {
     const row = await recorded.create(input, context);
     expect(events).toEqual(['beforeCreate', 'afterCreate']);
     expect(row.id).toEqual(expect.any(Number));
-    expect(calls.afterCreate).toEqual({ row, input, context });
+    expect(calls.afterCreate).toEqual({ row, input, context, state: {} });
   });
 
   test('afterUpdate runs after the update with the saved row and the client patch', async () => {
@@ -152,7 +152,7 @@ describe('write hooks', () => {
     const row = await recorded.update(created.id, { name: 'B' }, context);
     expect(events).toEqual(['beforeUpdate', 'afterUpdate']);
     expect(row.name).toBe('B');
-    expect(calls.afterUpdate).toEqual({ id: created.id, row, patch: { name: 'B' }, context });
+    expect(calls.afterUpdate).toEqual({ id: created.id, row, patch: { name: 'B' }, context, state: {} });
   });
 
   test('beforeDelete runs first, and afterDelete gets the soft-deleted row without its deletedAt', async () => {
@@ -163,7 +163,7 @@ describe('write hooks', () => {
     expect(events).toEqual(['beforeDelete', 'afterDelete']);
     expect(row).toMatchObject({ id: created.id, email: 'a@b.c' });
     expect(row).not.toHaveProperty('deletedAt');
-    expect(calls.afterDelete).toEqual({ id: created.id, row, context });
+    expect(calls.afterDelete).toEqual({ id: created.id, row, context, state: {} });
     const [stored] = await db.select({ deletedAt: users.deletedAt }).from(users).where(eq(users.id, created.id));
     expect(stored?.deletedAt).toBeInstanceOf(Date);
   });
@@ -198,5 +198,80 @@ describe('write hooks', () => {
     events.length = 0;
     await extended.rename(created.id, 'Renamed', context);
     expect(events).toEqual(['beforeUpdate', 'afterUpdate']);
+  });
+});
+
+describe('hook state', () => {
+  /** A service whose before hooks put a value on `state` and whose after hooks copy it to `seen`. */
+  function stateService() {
+    const seen: string[] = [];
+    const stateful = createService<typeof userEntity, Auth, CrudRepository<typeof userEntity>, { note?: string }>(
+      createRepository(db, userEntity),
+      {
+        state: () => ({}),
+        hooks: {
+          beforeCreate: ({ input, state }) => {
+            seen.push(`create starts with ${state.note ?? 'nothing'}`);
+            state.note = `created ${input.name}`;
+            return { ...input, passwordHash: 'h' };
+          },
+          afterCreate: ({ state }) => void seen.push(state.note ?? 'missing'),
+          beforeUpdate: ({ patch, state }) => {
+            state.note = `renamed to ${patch.name}`;
+            return patch;
+          },
+          afterUpdate: ({ state }) => void seen.push(state.note ?? 'missing'),
+          beforeDelete: ({ id, state }) => {
+            state.note = `deleted ${id}`;
+          },
+          afterDelete: ({ state }) => void seen.push(state.note ?? 'missing'),
+        },
+      },
+    );
+    return { seen, stateful, context: { auth: { userId: 1, orgId: 7 } } };
+  }
+
+  test('a value the before hook puts on state reaches the after hook, for create, update and delete', async () => {
+    const { seen, stateful, context } = stateService();
+    const created = await stateful.create({ email: 'a@b.c', name: 'Ann', orgId: 1 }, context);
+    await stateful.update(created.id, { name: 'Bea' }, context);
+    await stateful.delete(created.id, context);
+    expect(seen).toEqual(['create starts with nothing', 'created Ann', 'renamed to Bea', `deleted ${created.id}`]);
+  });
+
+  test('each call gets a new state, so nothing carries over from the call before', async () => {
+    const { seen, stateful, context } = stateService();
+    await stateful.create({ email: 'a@b.c', name: 'Ann', orgId: 1 }, context);
+    await stateful.create({ email: 'b@b.c', name: 'Bea', orgId: 1 }, context);
+    expect(seen).toEqual(['create starts with nothing', 'created Ann', 'create starts with nothing', 'created Bea']);
+  });
+
+  test('the state option sets the starting values', async () => {
+    let startedWith: number | undefined;
+    const counted = createService(createRepository(db, userEntity), {
+      state: () => ({ attempts: 0 }),
+      hooks: {
+        beforeCreate: ({ input, state }) => {
+          startedWith = state.attempts;
+          return { ...input, passwordHash: 'h' };
+        },
+      },
+    });
+    await counted.create({ email: 'a@b.c', name: 'Ann', orgId: 1 }, {});
+    expect(startedWith).toBe(0);
+  });
+
+  test('without a state option, hooks get an empty object', async () => {
+    let received: object | undefined;
+    const plain = createService(createRepository(db, userEntity), {
+      hooks: {
+        beforeCreate: ({ input, state }) => {
+          received = state;
+          return { ...input, passwordHash: 'h' };
+        },
+      },
+    });
+    await plain.create({ email: 'a@b.c', name: 'Ann', orgId: 1 }, {});
+    expect(received).toEqual({});
   });
 });

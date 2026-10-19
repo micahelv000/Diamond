@@ -213,7 +213,7 @@ describe('hook order and arguments', () => {
   test('delete: beforeDelete gets only the id, afterDelete the soft-deleted row', async () => {
     await requestFor('afterDelete', '/with-transaction');
     expect(callNames()).toEqual(['beforeDelete', 'afterDelete']);
-    expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(['context', 'id']);
+    expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(['context', 'id', 'state']);
     expect(calls[1]?.args).toMatchObject({ id: 1, row: { id: 1 } });
     expect(calls[1]?.args.row).not.toHaveProperty('deletedAt');
     expect((await storedUser())?.deletedAt).toBeInstanceOf(Date);

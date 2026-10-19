@@ -368,7 +368,7 @@ inside `b`'s factory the first argument already has `a`'s.
 
 Hooks run on every create, update and delete made through the service: the built-in methods, and custom
 service methods that call `base.create`, `base.update` or `base.delete`. Finders and calls on
-`service.repository` skip them. Each hook gets the caller's `context` and may be async.
+`service.repository` skip them. Each hook gets the caller's `context` and a `state` object, and may be async.
 
 | Hook | Runs | Receives | Returns |
 |---|---|---|---|
@@ -378,6 +378,27 @@ service methods that call `base.create`, `base.update` or `base.delete`. Finders
 | `afterUpdate` | after the update | `{ id, row, patch, context }`: the saved row and the client's changes | nothing (ignored) |
 | `beforeDelete` | before the delete | `{ id, context }`; read the row yourself if you need it | nothing; throw to block |
 | `afterDelete` | after the delete, soft or hard | `{ id, row, context }`: the deleted row | nothing (ignored) |
+
+Every hook in the table also gets `state`. Each create, update or delete gets a new `state`, and its before
+and after hooks share it, so a value worked out before the write can be read after it. The `state` option
+creates it and sets its type; without the option, `state` is an empty object you can't write to:
+
+```ts
+createService(flightRepo, {
+  state: () => ({ previousStatus: undefined as string | undefined }),
+  hooks: {
+    beforeUpdate: async ({ id, patch, context, state }) => {
+      const before = await flightRepo.findById(id, { columns: ['status'], transaction: context.transaction });
+      state.previousStatus = before?.status;
+      return patch;
+    },
+    afterUpdate: ({ row, state }) => notify(`${state.previousStatus} -> ${row.status}`),
+  },
+});
+```
+
+With explicit type arguments, pass the state type fourth: `createService<typeof flightEntity, Caller, typeof flightRepo, FlightHookState>`.
+State is never shared between calls, not even two calls with the same `context`.
 
 Throw from any hook to fail the call. Inside a
 [transaction](#transactions) (every route, by default) a throwing hook rolls back the write as well.

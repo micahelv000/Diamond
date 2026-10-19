@@ -222,6 +222,48 @@ describe('service', () => {
   });
 });
 
+describe('hook state', () => {
+  test('the state option sets the type of state in every hook', () => {
+    createService(repository, {
+      state: () => ({ previousStatus: undefined as string | undefined }),
+      hooks: {
+        beforeUpdate: ({ patch, state }) => {
+          expectTypeOf(state).toEqualTypeOf<{ previousStatus: string | undefined }>();
+          state.previousStatus = 'active';
+          return patch;
+        },
+        afterUpdate: ({ state }) => expectTypeOf(state.previousStatus).toEqualTypeOf<string | undefined>(),
+        afterDelete: ({ state }) => {
+          // @ts-expect-error -- the state type has no such key
+          state.somethingElse = 1;
+        },
+      },
+    });
+  });
+
+  test('with explicit type arguments, the state type comes fourth', () => {
+    createService<UserEntity, { orgId: number }, CrudRepository<UserEntity>, { count: number }>(repository, {
+      state: () => ({ count: 0 }),
+      hooks: { beforeDelete: ({ state }) => expectTypeOf(state.count).toBeNumber() },
+    });
+    createService<UserEntity, { orgId: number }, CrudRepository<UserEntity>, { count: number }>(repository, {
+      // @ts-expect-error -- the state option must return the declared state type
+      state: () => ({ count: 'zero' }),
+    });
+  });
+
+  test('without a state option, state is empty and nothing can be written to it', () => {
+    createService(repository, {
+      hooks: {
+        beforeDelete: ({ state }) => {
+          // @ts-expect-error -- no state option, so state has no keys
+          state.note = 'x';
+        },
+      },
+    });
+  });
+});
+
 describe('soft delete by default', () => {
   const notes = pgTable('notes', { id: integer().primaryKey(), body: text().notNull() });
 
