@@ -142,6 +142,23 @@ await flightRepo.findByScheduledDepartureBetween(from, to, { sort: ['flightNumbe
 How TypeScript builds these method names and types from the config is explained step by step in
 [docs/finder-types.md](docs/finder-types.md).
 
+### Dates and times from clients
+
+JSON has no date type, so request bodies and URL filters take every date and time as an ISO 8601 string,
+checked with Zod's built-in validators. Anything else, including an impossible date like Feb 30, is a 400.
+
+| Column | Format | Example |
+|---|---|---|
+| `timestamp` (with or without time zone) | date-time with a timezone | `2026-03-01T10:00:00Z`, `2026-03-01T10:00:00+02:00` |
+| `date` | date | `2026-03-01` |
+| `time` | time | `10:00:00` |
+| `interval` | ISO duration | `PT1H30M` |
+
+Columns that drizzle reads as a `Date` get one; string-mode columns keep the string. The offset is never lost:
+a `timestamp without time zone` can't store one, so the moment is converted to UTC first (`10:00+02:00` is stored
+as `08:00`). Server code that calls the
+service or repository directly passes `Date` objects as usual.
+
 ### URL filters
 
 The same operators are list querystring filters as `?column__operator=`, ANDed together:

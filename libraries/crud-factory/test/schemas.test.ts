@@ -1,4 +1,4 @@
-import { integer, pgTable, timestamp } from 'drizzle-orm/pg-core';
+import { integer, interval, pgTable, time, timestamp } from 'drizzle-orm/pg-core';
 import { describe, expect, test } from 'vitest';
 import { defineEntity } from '../src/index.ts';
 import { userEntity } from './fixtures/entities.ts';
@@ -103,23 +103,63 @@ describe('date columns', () => {
     expect(eventSchemas.update.safeParse({ at }).success).toBe(false);
   });
 
-  test.each([
-    ['an ISO string', '2026-03-04T05:06:07.000Z'],
-    ['a Date', new Date('2026-03-04T05:06:07.000Z')],
-  ])('accepts %s and returns a Date', (_label, at) => {
+  test('accepts an ISO string and returns a Date', () => {
     const expected = new Date('2026-03-04T05:06:07.000Z');
-    expect(eventSchemas.create.parse({ id: 1, at })).toEqual({ id: 1, at: expected });
-    expect(eventSchemas.update.parse({ at })).toEqual({ at: expected });
+    expect(eventSchemas.create.parse({ id: 1, at: '2026-03-04T05:06:07.000Z' })).toEqual({ id: 1, at: expected });
+    expect(eventSchemas.update.parse({ at: '2026-03-04T05:06:07.000Z' })).toEqual({ at: expected });
+  });
+
+  test('rejects a Date object: clients send ISO strings', () => {
+    expect(eventSchemas.create.safeParse({ id: 1, at: new Date(0) }).success).toBe(false);
   });
 
   test('accepts null on a nullable column and still rejects other types', () => {
-    expect(eventSchemas.create.parse({ id: 1, at: new Date(0), endsAt: null })).toEqual({ id: 1, at: new Date(0), endsAt: null });
+    expect(eventSchemas.create.parse({ id: 1, at: '1970-01-01T00:00:00Z', endsAt: null })).toEqual({ id: 1, at: new Date(0), endsAt: null });
     expect(eventSchemas.update.parse({ endsAt: null })).toEqual({ endsAt: null });
     expect(eventSchemas.update.safeParse({ endsAt: true }).success).toBe(false);
   });
 
   test('keeps a NOT NULL column without a default required on create', () => {
     expect(eventSchemas.create.safeParse({ id: 1 }).success).toBe(false);
+  });
+});
+
+describe('every date and time column takes its ISO format, in bodies and URL filters', () => {
+  const times = pgTable('times', {
+    id: integer().primaryKey(),
+    at: timestamp({ withTimezone: true, mode: 'string' }),
+    localAt: timestamp('local_at', { mode: 'string' }),
+    opensAt: time('opens_at'),
+    lasts: interval(),
+  });
+  const { schemas } = defineEntity(times, {
+    primaryKey: 'id',
+    softDelete: false,
+    filterable: { at: ['gte'], localAt: ['gte'], opensAt: ['gte'], lasts: ['gte'] },
+  });
+  const accepts = (key: string, value: string) =>
+    schemas.create.safeParse({ id: 1, [key]: value }).success && schemas.listQuery.safeParse({ [`${key}__gte`]: value }).success;
+  const rejects = (key: string, value: string) =>
+    !schemas.create.safeParse({ id: 1, [key]: value }).success && !schemas.listQuery.safeParse({ [`${key}__gte`]: value }).success;
+
+  test.each([
+    ['a string-mode timestamp', 'at', '2026-03-04T05:06:07Z', ['2026-03-04T05:06:07', '2026-02-30T00:00:00Z', 'not a date']],
+    ['a time', 'opensAt', '09:30:00', ['9am', '25:00:00', '2026-03-04T09:30:00Z']],
+    ['an interval', 'lasts', 'PT1H30M', ['1 hour', 'P', '90']],
+  ] as const)('%s', (_label, key, good, bad) => {
+    expect(accepts(key, good)).toBe(true);
+    for (const value of bad) expect(rejects(key, value)).toBe(true);
+  });
+
+  test('a string-mode timestamp with time zone keeps the string, offset included', () => {
+    expect(schemas.create.parse({ id: 1, at: '2026-03-04T05:06:07+02:00' })).toMatchObject({ at: '2026-03-04T05:06:07+02:00' });
+  });
+
+  test('a timestamp without time zone gets the moment in UTC, so the offset is never lost', () => {
+    expect(schemas.create.parse({ id: 1, localAt: '2026-03-04T10:00:00+02:00' })).toMatchObject({ localAt: '2026-03-04T08:00:00.000Z' });
+    expect(schemas.listQuery.parse({ localAt__gte: '2026-03-04T10:00:00+02:00' })).toMatchObject({
+      where: { localAt__gte: '2026-03-04T08:00:00.000Z' },
+    });
   });
 });
 

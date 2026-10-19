@@ -10,22 +10,6 @@ export function isDateObjectColumn(column: Column): boolean {
   return type === 'object' && constraint === 'date';
 }
 
-/** A timestamp column that drizzle reads as a JavaScript `Date`. */
-export function isTimestampColumn(column: Column): boolean {
-  return isDateObjectColumn(column) && column.getSQLType() !== 'date';
-}
-
-/** A `date` column (no time of day) that drizzle reads as a JavaScript `Date`. */
-export function isDateOnlyColumn(column: Column): boolean {
-  return isDateObjectColumn(column) && column.getSQLType() === 'date';
-}
-
-/** A `date` column in drizzle's string mode, read as `YYYY-MM-DD` text. */
-export function isStringDateColumn(column: Column): boolean {
-  const { type, constraint } = extractExtendedColumnType(column);
-  return type === 'string' && constraint === 'date';
-}
-
 /** A column that drizzle reads as a JavaScript `bigint`. In Postgres that is always a 64-bit integer. */
 export function isBigintColumn(column: Column): boolean {
   return extractExtendedColumnType(column).type === 'bigint';

@@ -88,17 +88,15 @@ describe('date and timestamp columns', () => {
     ['a millisecond timestamp', Date.UTC(2026, 2, 4)],
     ['a garbage string', 'not a date'],
     ['an invalid Date object', new Date('nope')],
+    ['a Date object (clients send ISO strings)', new Date(ISO)],
   ])('rejects %s', (_label, value) => {
     expect(patchValue('ts', value)).toBe('rejected');
   });
 
-  test.each([
-    ['an ISO string with an offset', '2026-03-04T05:06:07+05:30', '2026-03-03T23:36:07.000Z'],
-    ['a Date object', new Date(ISO), ISO],
-  ])('accepts %s as the same instant', (_label, value, instant) => {
-    const parsed = patchValue('ts', value);
+  test('accepts an ISO string with an offset as the same instant', () => {
+    const parsed = patchValue('ts', '2026-03-04T05:06:07+05:30');
     expect(parsed).toBeInstanceOf(Date);
-    expect(parsed instanceof Date && parsed.toISOString()).toBe(instant);
+    expect(parsed instanceof Date && parsed.toISOString()).toBe('2026-03-03T23:36:07.000Z');
   });
 
   test('a date-mode date column turns an ISO day into midnight UTC', () => {

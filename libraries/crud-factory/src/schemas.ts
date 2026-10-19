@@ -2,29 +2,46 @@ import { getColumns, type Column } from 'drizzle-orm';
 import type { PgTable } from 'drizzle-orm/pg-core';
 import { bigintStringModeSchema, createSchemaFactory } from 'drizzle-orm/zod';
 import { z } from 'zod';
-import { isBigintColumn, isBooleanColumn, isDateObjectColumn, isDateOnlyColumn, isFloatColumn, isStringDateColumn, isTimestampColumn } from './columns.ts';
+import { isBigintColumn, isBooleanColumn, isDateObjectColumn, isFloatColumn } from './columns.ts';
 import type { AnyEntity, EntityConfig, EntitySchemas, FilterOperator } from './types.ts';
 
 const bodyFactory = createSchemaFactory();
 // Path params and query values arrive as strings.
 const queryFactory = createSchemaFactory({ coerce: { number: true, bigint: true } });
 
-// JSON has no Date or bigint type. Request bodies send them as strings, checked by Zod's and drizzle's validators.
+// JSON has no bigint type, so clients may send one as a string. drizzle caps floats far below what Postgres stores.
 const writeSchemas = {
-  timestamp: z.union([z.date(), z.iso.datetime({ offset: true }).pipe(z.coerce.date())]),
-  day: z.union([z.date(), z.iso.date().pipe(z.coerce.date())]),
-  dayString: z.iso.date(),
   int64: z.union([z.int(), bigintStringModeSchema]).pipe(z.coerce.bigint()),
-  // drizzle caps floats far below what Postgres stores.
   float: z.number(),
 };
 // Responses send bigints back as strings.
 const readInt64 = z.codec(z.string(), z.bigint(), { decode: BigInt, encode: String });
 
+/**
+ * JSON has no date type, so clients send every date and time as an ISO 8601 string, checked with Zod's
+ * built-in validators: `2026-03-01T10:00:00Z` (a timezone is required), `2026-03-01`, `10:00:00` or `PT1H30M`.
+ */
+function isoSchema(column: Column): z.ZodType | undefined {
+  const sqlType = column.getSQLType();
+  if (sqlType.startsWith('timestamp')) return z.iso.datetime({ offset: true });
+  if (sqlType === 'date') return z.iso.date();
+  if (sqlType.startsWith('time')) return z.iso.time();
+  if (sqlType.startsWith('interval')) return z.iso.duration();
+  return undefined;
+}
+
+function isTimestampWithoutTimeZone(column: Column): boolean {
+  const sqlType = column.getSQLType();
+  return sqlType.startsWith('timestamp') && !sqlType.endsWith('with time zone');
+}
+
 function writeSchema(column: Column): z.ZodType | undefined {
-  if (isStringDateColumn(column)) return writeSchemas.dayString;
-  if (isDateOnlyColumn(column)) return writeSchemas.day;
-  if (isTimestampColumn(column)) return writeSchemas.timestamp;
+  const iso = isoSchema(column);
+  if (iso) {
+    if (isDateObjectColumn(column)) return iso.pipe(z.coerce.date());
+    if (isTimestampWithoutTimeZone(column)) return iso.pipe(z.coerce.date()).transform((date) => date.toISOString());
+    return iso;
+  }
   if (isBigintColumn(column)) return writeSchemas.int64;
   if (isFloatColumn(column)) return writeSchemas.float;
   return undefined;
@@ -33,7 +50,7 @@ function writeSchema(column: Column): z.ZodType | undefined {
 // Query values are strings, so booleans need `stringbool` (coercion reads "false" as true) and dates use the body formats.
 function queryValueSchema(column: Column): z.ZodType | undefined {
   if (isBooleanColumn(column)) return z.stringbool();
-  if (isDateObjectColumn(column) || isStringDateColumn(column)) return writeSchema(column);
+  if (isoSchema(column)) return writeSchema(column);
   return undefined;
 }
 
