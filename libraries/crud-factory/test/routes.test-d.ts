@@ -14,15 +14,15 @@ const repository = createRepository(drizzle(), userEntity);
 const service = createService(repository);
 
 describe('crudRoutes types', () => {
-  test('TCtx is inferred from `context` and flows into authorize rules and extend', () => {
+  test('TContext is inferred from `context` and flows into authorize rules and extend', () => {
     const plugin = crudRoutes({
       service,
       context: (request) => request.user ?? undefined,
       authorize: {
         '*': requireAuth,
         delete: requireRole('admin'),
-        list: ({ ctx }) => {
-          expectTypeOf(ctx).toEqualTypeOf<TestUser | undefined>();
+        list: ({ context }) => {
+          expectTypeOf(context).toEqualTypeOf<TestUser | undefined>();
           return true;
         },
         update: ({ id }) => {
@@ -42,7 +42,7 @@ describe('crudRoutes types', () => {
     expectTypeOf(plugin).toEqualTypeOf<CrudRoutesPlugin<typeof userEntity>>();
   });
 
-  test('extend sees service.repository with its custom methods, and TCtx is still inferred', () => {
+  test('extend sees service.repository with its custom methods, and TContext is still inferred', () => {
     const extendedRepo = repository.extend(({ scoped, table }) => ({
       idsByName: (name: string, options: QueryOptions = {}) => {
         const query = scoped(options);
@@ -75,7 +75,7 @@ describe('crudRoutes types', () => {
   test('an extended service is accepted, and its methods are typed inside extend', () => {
     const extendedRepo = repository.extend(() => ({ countActive: async () => 1 }));
     const userService = createService<typeof userEntity, TestUser, typeof extendedRepo>(extendedRepo).extend((base) => ({
-      activate: (id: number, ctx: ServiceContext<TestUser>) => base.update(id, { status: 'active' }, ctx),
+      activate: (id: number, context: ServiceContext<TestUser>) => base.update(id, { status: 'active' }, context),
     }));
     crudRoutes({
       service: userService,
@@ -83,13 +83,13 @@ describe('crudRoutes types', () => {
       authorize: {
         '*': requireAuth,
         update: requireRole('admin'),
-        list: ({ ctx }) => {
-          expectTypeOf(ctx).toEqualTypeOf<TestUser | undefined>();
+        list: ({ context }) => {
+          expectTypeOf(context).toEqualTypeOf<TestUser | undefined>();
           return true;
         },
       },
       extend: (scope, { service, entity, serviceContext }) => {
-        // `TCtx` is still inferred from `context`.
+        // `TContext` is still inferred from `context`.
         expectTypeOf(serviceContext).returns.toEqualTypeOf<ServiceContext<TestUser>>();
         expectTypeOf(service).toEqualTypeOf(userService);
         expectTypeOf(service.activate).parameters.toEqualTypeOf<[number, ServiceContext<TestUser>]>();

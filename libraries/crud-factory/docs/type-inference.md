@@ -15,15 +15,15 @@ The types live in `src/fastify/crud-routes.ts` (`crudRoutes`) and `src/fastify/o
 ## The three type parameters
 
 ```ts
-function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudService<E, TCtx>>(
-  options: CrudRoutesOptions<E, TCtx, S>,
+function crudRoutes<E extends CrudEntity<E>, TContext = undefined, S = CrudService<E, TContext>>(
+  options: CrudRoutesOptions<E, TContext, S>,
 ): FastifyPluginAsync;
 
-interface CrudRoutesOptions<E, TCtx, S> {
-  service: S & CrudServiceMethods<E, NoInfer<TCtx>>;
-  context?: ContextMapper<TCtx>;
-  authorize?: AuthorizeMap<TCtx>;
-  extend?: (scope: CrudScope, tools: CrudExtendTools<E, TCtx, S>) => void | Promise<void>;
+interface CrudRoutesOptions<E, TContext, S> {
+  service: S & CrudServiceMethods<E, NoInfer<TContext>>;
+  context?: ContextMapper<TContext>;
+  authorize?: AuthorizeMap<TContext>;
+  extend?: (scope: CrudScope, tools: CrudExtendTools<E, TContext, S>) => void | Promise<void>;
   // …
 }
 ```
@@ -31,10 +31,10 @@ interface CrudRoutesOptions<E, TCtx, S> {
 | Parameter | What it is | Where TypeScript gets it from |
 |---|---|---|
 | `E` | the entity from `defineEntity` | the service's `entity` property |
-| `TCtx` | the current user, as returned by `context` | `context` (and typed `authorize` rules), never the service |
+| `TContext` | the current user, as returned by `context` | `context` (and typed `authorize` rules), never the service |
 | `S` | the exact type of the service you passed | the whole `service` value |
 
-All three come from the single line `service: S & CrudServiceMethods<E, NoInfer<TCtx>>`. The next sections
+All three come from the single line `service: S & CrudServiceMethods<E, NoInfer<TContext>>`. The next sections
 take it apart.
 
 ## The example used on this page
@@ -43,7 +43,7 @@ take it apart.
 type User = { id: number; roles: string[] };
 
 const userService = createService(userRepository).extend((base) => ({
-  activate: (id: number, ctx: ServiceContext<User>) => base.update(id, { status: 'active' }, ctx),
+  activate: (id: number, context: ServiceContext<User>) => base.update(id, { status: 'active' }, context),
 }));
 
 crudRoutes({
@@ -66,7 +66,7 @@ its own like that, it uses the whole type of the value passed in. So `S` becomes
 
 `S` is then passed to `extend` as `tools.service`. That is why `service.activate` is typed inside `extend`.
 
-Without `S`, the parameter would be typed as `CrudServiceMethods<E, TCtx>` only, and `extend` would see just
+Without `S`, the parameter would be typed as `CrudServiceMethods<E, TContext>` only, and `extend` would see just
 the built-in methods. `activate` would be missing.
 
 ## Why the intersection lets TypeScript infer `E`
@@ -81,16 +81,16 @@ service is still a compile error.
 Only the built-in methods are checked, not the generated finders. They are enough to find `E` and to check
 the auth type, and `S` already keeps the full type.
 
-## Why `NoInfer` makes `TCtx` come from `context`
+## Why `NoInfer` makes `TContext` come from `context`
 
-`TCtx` appears in two places: in `context` (`ContextMapper<TCtx>`) and in the service's methods
-(`ServiceContext<TCtx>`). Without help, TypeScript would collect a guess from both places.
+`TContext` appears in two places: in `context` (`ContextMapper<TContext>`) and in the service's methods
+(`ServiceContext<TContext>`). Without help, TypeScript would collect a guess from both places.
 
 In the example the two guesses are `User` (from `context`) and `unknown` (from `userService`, which has no
-auth type). TypeScript would pick `unknown`, so `ctx` in every `authorize` rule and in `serviceContext`
+auth type). TypeScript would pick `unknown`, so `context` in every `authorize` rule and in `serviceContext`
 would lose its type.
 
-`NoInfer<TCtx>` tells TypeScript not to guess `TCtx` from that spot. So `TCtx` comes from `context` (and
+`NoInfer<TContext>` tells TypeScript not to guess `TContext` from that spot. So `TContext` comes from `context` (and
 from `authorize` rules, which are usually written to match it), and becomes `User`. The service is then
 just checked against it:
 
@@ -103,11 +103,11 @@ crudRoutes({ service: orgService, context: () => ({ orgId: 1 }) });     // ok
 crudRoutes({ service: orgService, context: () => ({ orgId: 'one' }) }); // error: wrong auth type
 ```
 
-When there is no `context` and no typed `authorize` rule, nothing tells TypeScript what `TCtx` is, so it
+When there is no `context` and no typed `authorize` rule, nothing tells TypeScript what `TContext` is, so it
 uses the default, `undefined`.
 
 ## Where this is tested
 
-`test/routes.test-d.ts` checks each case on this page: `TCtx` inferred from `context`, an extended service
+`test/routes.test-d.ts` checks each case on this page: `TContext` inferred from `context`, an extended service
 keeping its methods inside `extend`, and a mismatched auth type failing to compile. If you change the
 `service` line in `options.ts`, run those tests.

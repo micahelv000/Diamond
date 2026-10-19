@@ -29,7 +29,7 @@ export type CrudScope = FastifyInstance<
 >;
 
 /** Tools passed to `extend` so custom routes can reuse the service and the request's authorization. */
-export interface CrudExtendTools<E extends CrudEntity<E>, TCtx, S = CrudService<E, TCtx>> {
+export interface CrudExtendTools<E extends CrudEntity<E>, TContext, S = CrudService<E, TContext>> {
   /** The service the generated routes use, fully typed, including any methods added with `extend`. */
   service: S;
   /** The entity, so custom routes can reuse its schemas. */
@@ -39,7 +39,7 @@ export interface CrudExtendTools<E extends CrudEntity<E>, TCtx, S = CrudService<
    * Pass it to every call so they all commit or roll back together. On a `config.crudPublic` route it has
    * no user and no row scope.
    */
-  serviceContext(request: FastifyRequest): ServiceContext<TCtx>;
+  serviceContext(request: FastifyRequest): ServiceContext<TContext>;
 }
 
 /** Which routes to register. Leave it out to register all of them. */
@@ -60,23 +60,23 @@ export type CrudHooksConfig = {
 };
 
 /** Options for `crudRoutes`. Only `service` is required, and `S` is usually inferred. */
-export interface CrudRoutesOptions<E extends CrudEntity<E>, TCtx, S = CrudService<E, TCtx>> {
-  // `S &` lets TypeScript infer the service's full type into `S`, and `NoInfer` makes `TCtx` come only from
-  // `context`. Only the built-in methods are checked, because the generated finder types break `TCtx` inference.
+export interface CrudRoutesOptions<E extends CrudEntity<E>, TContext, S = CrudService<E, TContext>> {
+  // `S &` lets TypeScript infer the service's full type into `S`, and `NoInfer` makes `TContext` come only from
+  // `context`. Only the built-in methods are checked, because the generated finder types break `TContext` inference.
   // The full explanation is in docs/type-inference.md.
   /** The service the routes call. Its entity decides the URL params, the schemas and the allowed sort keys. */
-  service: S & CrudServiceMethods<E, NoInfer<TCtx>>;
+  service: S & CrudServiceMethods<E, NoInfer<TContext>>;
   /**
    * Returns the current user for a request, or `undefined` for an anonymous caller. The value goes to
-   * every `authorize` rule and to the service as `ctx.auth`. This library never reads tokens itself.
+   * every `authorize` rule and to the service as `context.auth`. This library never reads tokens itself.
    */
-  context?: ContextMapper<TCtx>;
+  context?: ContextMapper<TContext>;
   /**
    * Access rules per operation, plus an optional `'*'` rule for all of them. A rule returns `true` to allow,
    * `false` to deny (401 if anonymous, 403 otherwise), or a SQL condition that limits which rows match.
    * If left out, every route is open and a warning is logged at startup.
    */
-  authorize?: AuthorizeMap<TCtx>;
+  authorize?: AuthorizeMap<TContext>;
   /** Which routes to register. Leave it out to register all five. */
   operations?: OperationsConfig;
   /** Fastify hooks added to every route here, including custom routes from `extend`. */
@@ -100,5 +100,5 @@ export interface CrudRoutesOptions<E extends CrudEntity<E>, TCtx, S = CrudServic
    * Give each route `config: { crudOperation }`, or `config: { crudPublic: true }` to skip `authorize`;
    * registration fails without one. Pass `serviceContext(request)` to service calls.
    */
-  extend?: (scope: CrudScope, tools: CrudExtendTools<E, TCtx, S>) => void | Promise<void>;
+  extend?: (scope: CrudScope, tools: CrudExtendTools<E, TContext, S>) => void | Promise<void>;
 }

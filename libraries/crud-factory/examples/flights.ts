@@ -146,26 +146,26 @@ interface Caller { id: number; roles: string[] }
 type Schedule = Pick<Flight, 'aircraftId' | 'originCode' | 'destinationCode' | 'scheduledDeparture' | 'scheduledArrival'>;
 const scheduleKeys = ['aircraftId', 'originCode', 'destinationCode', 'scheduledDeparture', 'scheduledArrival'] as const;
 
-async function assertSchedulable(plan: Schedule, ctx: ServiceContext<Caller>, excludeId?: number): Promise<void> {
+async function assertSchedulable(plan: Schedule, context: ServiceContext<Caller>, excludeId?: number): Promise<void> {
   if (plan.scheduledArrival <= plan.scheduledDeparture) throw new BadRequestError('Arrival must be after departure');
   if (plan.originCode === plan.destinationCode) throw new BadRequestError('Origin and destination must differ');
-  const clash = await flightRepo.findOverlapping(plan.aircraftId, plan.scheduledDeparture, plan.scheduledArrival, excludeId, ctx);
+  const clash = await flightRepo.findOverlapping(plan.aircraftId, plan.scheduledDeparture, plan.scheduledArrival, excludeId, context);
   if (clash) throw new ConflictError(`Aircraft is already flying ${clash.flightNumber} then`);
 }
 
 // The third type argument keeps the custom queries typed on `service.repository`.
 const baseFlightService = createService<typeof flightEntity, Caller, typeof flightRepo>(flightRepo, {
   hooks: {
-    beforeCreate: async ({ input, ctx }) => {
-      await assertSchedulable(input, ctx);
+    beforeCreate: async ({ input, context }) => {
+      await assertSchedulable(input, context);
       return input;
     },
-    beforeUpdate: async ({ id, patch, ctx }) => {
+    beforeUpdate: async ({ id, patch, context }) => {
       // Re-check only when the schedule changes, merging the patch with the stored row.
       if (scheduleKeys.some((key) => patch[key] !== undefined)) {
-        const current = await flightRepo.findById(id, { columns: scheduleKeys, scope: ctx.scope, tx: ctx.tx, log: ctx.log });
+        const current = await flightRepo.findById(id, { columns: scheduleKeys, scope: context.scope, tx: context.tx, log: context.log });
         if (!current) throw new NotFoundError('flights not found');
-        await assertSchedulable({ ...current, ...patch }, ctx, id);
+        await assertSchedulable({ ...current, ...patch }, context, id);
       }
       // Status changes set the actual times unless the client sent them.
       const now = new Date();
@@ -175,32 +175,32 @@ const baseFlightService = createService<typeof flightEntity, Caller, typeof flig
         ...(patch.status === 'landed' && !patch.actualArrival && { actualArrival: now }),
       };
     },
-    afterCreate: ({ row, ctx }) => ctx.log.debug({ id: row.id }, 'flight scheduled'),
-    afterUpdate: ({ row, ctx }) => ctx.log.debug({ id: row.id, status: row.status }, 'flight updated'),
+    afterCreate: ({ row, context }) => context.log.debug({ id: row.id }, 'flight scheduled'),
+    afterUpdate: ({ row, context }) => context.log.debug({ id: row.id, status: row.status }, 'flight updated'),
     // A flight that has flown stays on record.
-    beforeDelete: async ({ id, ctx }) => {
-      const current = await flightRepo.findById(id, { columns: ['status'], scope: ctx.scope, tx: ctx.tx, log: ctx.log });
+    beforeDelete: async ({ id, context }) => {
+      const current = await flightRepo.findById(id, { columns: ['status'], scope: context.scope, tx: context.tx, log: context.log });
       if (current?.status === 'departed' || current?.status === 'landed') throw new ConflictError(`Can't delete a ${current.status} flight`);
     },
   },
 });
 
-// Custom service methods. Calling `base` methods with `ctx` runs the hooks, logging, scope and transaction.
+// Custom service methods. Calling `base` methods with `context` runs the hooks, logging, scope and transaction.
 const flightService = baseFlightService.extend((base) => ({
-  delayFlight: async (id: number, minutes: number, ctx: ServiceContext<Caller>): Promise<Flight> => {
+  delayFlight: async (id: number, minutes: number, context: ServiceContext<Caller>): Promise<Flight> => {
   
-    const flight = await base.findById(id, { columns: ['scheduledDeparture', 'scheduledArrival'] }, ctx);
+    const flight = await base.findById(id, { columns: ['scheduledDeparture', 'scheduledArrival'] }, context);
     if (!flight) throw new NotFoundError('flights not found');
     const shift = (date: Date) => new Date(date.getTime() + minutes * 60_000);
-    ctx.log.debug({ id, minutes }, 'delaying flight');
-    return base.update(id, { scheduledDeparture: shift(flight.scheduledDeparture), scheduledArrival: shift(flight.scheduledArrival) }, ctx);
+    context.log.debug({ id, minutes }, 'delaying flight');
+    return base.update(id, { scheduledDeparture: shift(flight.scheduledDeparture), scheduledArrival: shift(flight.scheduledArrival) }, context);
   },
-  // In a route, `ctx` carries the request transaction, so if the second create fails the first is rolled back.
-  scheduleRotation: async (outbound: CreateInput<typeof flightEntity>, inbound: CreateInput<typeof flightEntity>, ctx: ServiceContext<Caller>) =>
-    [await base.create(outbound, ctx), await base.create(inbound, ctx)],
+  // In a route, `context` carries the request transaction, so if the second create fails the first is rolled back.
+  scheduleRotation: async (outbound: CreateInput<typeof flightEntity>, inbound: CreateInput<typeof flightEntity>, context: ServiceContext<Caller>) =>
+    [await base.create(outbound, context), await base.create(inbound, context)],
   // Code can sort by columns outside `sortable`; an enum sorts in its declared order.
-  departuresBoard: (originCode: string, ctx: ServiceContext<Caller>) =>
-    base.findByOriginCode(originCode, ctx, {
+  departuresBoard: (originCode: string, context: ServiceContext<Caller>) =>
+    base.findByOriginCode(originCode, context, {
       columns: ['id', 'flightNumber', 'destinationCode', 'scheduledDeparture', 'status'],
       sort: ['status', 'scheduledDeparture'],
     }),

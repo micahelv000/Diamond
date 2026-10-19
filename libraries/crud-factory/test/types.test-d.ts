@@ -98,12 +98,12 @@ describe('chained extend', () => {
     const service = createService<UserEntity, { orgId: number }>(repository);
     const extended = service
       .extend((base) => ({
-        activate: (id: number, ctx: ServiceContext<{ orgId: number }>) => base.update(id, { status: 'active' }, ctx),
+        activate: (id: number, context: ServiceContext<{ orgId: number }>) => base.update(id, { status: 'active' }, context),
       }))
       .extend((base) => {
         // Inside the second factory, `base` already has the first extension's method.
         expectTypeOf(base.activate).returns.resolves.toEqualTypeOf<Row<UserEntity>>();
-        return { activateAll: (ids: number[], ctx: ServiceContext<{ orgId: number }>) => Promise.all(ids.map((id) => base.activate(id, ctx))) };
+        return { activateAll: (ids: number[], context: ServiceContext<{ orgId: number }>) => Promise.all(ids.map((id) => base.activate(id, context))) };
       });
     expectTypeOf(extended.activate).parameters.toEqualTypeOf<[number, ServiceContext<{ orgId: number }>]>();
     expectTypeOf(extended.activateAll).returns.resolves.toEqualTypeOf<Row<UserEntity>[]>();
@@ -183,34 +183,34 @@ describe('service', () => {
     expectTypeOf<FastifyBaseLogger>().toExtend<Logger>();
   });
 
-  test('ctx.auth is typed and create takes the API input', () => {
+  test('context.auth is typed and create takes the API input', () => {
     const service = createService<UserEntity, { orgId: number }>(repository, {
       hooks: {
-        beforeCreate: ({ input, ctx }) => {
-          expectTypeOf(ctx.auth).toEqualTypeOf<{ orgId: number } | undefined>();
+        beforeCreate: ({ input, context }) => {
+          expectTypeOf(context.auth).toEqualTypeOf<{ orgId: number } | undefined>();
           // Hidden columns aren't in the API input, so the hook supplies them.
-          return { ...input, passwordHash: 'hashed', orgId: ctx.auth?.orgId ?? 0 };
+          return { ...input, passwordHash: 'hashed', orgId: context.auth?.orgId ?? 0 };
         },
       },
     });
     expectTypeOf(service.create).parameter(0).toEqualTypeOf<CreateInput<UserEntity>>();
   });
-  test('after and delete hooks get the saved row, the client values and the typed ctx', () => {
+  test('after and delete hooks get the saved row, the client values and the typed context', () => {
     createService<UserEntity, { orgId: number }>(repository, {
       hooks: {
-        afterCreate: ({ row, input, ctx }) => {
+        afterCreate: ({ row, input, context }) => {
           expectTypeOf(row).toEqualTypeOf<Row<UserEntity>>();
           expectTypeOf(input).toEqualTypeOf<CreateInput<UserEntity>>();
-          expectTypeOf(ctx.auth).toEqualTypeOf<{ orgId: number } | undefined>();
+          expectTypeOf(context.auth).toEqualTypeOf<{ orgId: number } | undefined>();
         },
         afterUpdate: ({ id, row, patch }) => {
           expectTypeOf(id).toBeNumber();
           expectTypeOf(row).toEqualTypeOf<Row<UserEntity>>();
           expectTypeOf(patch).toEqualTypeOf<UpdateInput<UserEntity>>();
         },
-        beforeDelete: async ({ id, ctx }) => {
+        beforeDelete: async ({ id, context }) => {
           expectTypeOf(id).toBeNumber();
-          expectTypeOf(ctx).toEqualTypeOf<ServiceContext<{ orgId: number }>>();
+          expectTypeOf(context).toEqualTypeOf<ServiceContext<{ orgId: number }>>();
         },
         afterDelete: ({ row }) => expectTypeOf(row).toEqualTypeOf<Row<UserEntity>>(),
       },

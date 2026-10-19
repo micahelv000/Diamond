@@ -24,9 +24,9 @@ const calls: { hook: HookName; args: Record<string, unknown> }[] = [];
 let afterUpdateMutatesRow = false;
 
 /** Records the call, writes an audit post (a second entity) in the hook's transaction, then maybe throws. */
-async function hookStep(hook: HookName, args: { ctx: { tx?: Database } } & Record<string, unknown>): Promise<void> {
+async function hookStep(hook: HookName, args: { context: { tx?: Database } } & Record<string, unknown>): Promise<void> {
   calls.push({ hook, args });
-  await postRepo.create({ authorId: 1, orgId: 10, title: hook }, { tx: args.ctx.tx });
+  await postRepo.create({ authorId: 1, orgId: 10, title: hook }, { tx: args.context.tx });
   if (failAt === hook) throw new ConflictError(`${hook} failed`);
 }
 
@@ -69,14 +69,14 @@ function routes(transaction: boolean): CrudRoutesOptions<typeof userEntity, Test
     extend: (scope, { service, serviceContext }) => {
       // Catches a unique violation, then keeps using the aborted transaction.
       scope.post('/swallow-then-query', { config: { crudOperation: 'create' } }, async (request) => {
-        const ctx = serviceContext(request);
-        await service.repository.create({ email: 'seed@x.io', name: 'Dup', orgId: 10, passwordHash: 'h' }, { tx: ctx.tx }).catch(() => undefined);
-        return service.repository.findMany({ tx: ctx.tx, withTotal: true });
+        const context = serviceContext(request);
+        await service.repository.create({ email: 'seed@x.io', name: 'Dup', orgId: 10, passwordHash: 'h' }, { tx: context.tx }).catch(() => undefined);
+        return service.repository.findMany({ tx: context.tx, withTotal: true });
       });
       // The documented fix: the risky write runs in a savepoint, so its failure doesn't abort the request.
       scope.post('/savepoint', { config: { crudOperation: 'create' } }, async (request, reply) => {
-        const ctx = serviceContext(request);
-        const tx = ctx.tx;
+        const context = serviceContext(request);
+        const tx = context.tx;
         if (!tx) throw new Error('expected a request transaction');
         const kept = await service.repository.create({ email: 'kept@x.io', name: 'Kept', orgId: 10, passwordHash: 'h' }, { tx });
         await tx
@@ -182,8 +182,8 @@ describe('hook order and arguments', () => {
     const response = await requestFor('afterCreate', '/tx');
     expect(response.statusCode).toBe(201);
     expect(callNames()).toEqual(['beforeCreate', 'afterCreate']);
-    expect(calls[0]?.args).toMatchObject({ input: newUser('new@x.io'), ctx: { auth: admin, tx: expect.any(Object), log: expect.any(Object) } });
-    expect(calls[0]?.args.ctx).toMatchObject({ scope: undefined });
+    expect(calls[0]?.args).toMatchObject({ input: newUser('new@x.io'), context: { auth: admin, tx: expect.any(Object), log: expect.any(Object) } });
+    expect(calls[0]?.args.context).toMatchObject({ scope: undefined });
     expect(calls[1]?.args).toMatchObject({ input: newUser('new@x.io'), row: { id: 2, email: 'new@x.io' } });
     expect(calls[1]?.args.row).not.toHaveProperty('passwordHash');
   });
@@ -198,7 +198,7 @@ describe('hook order and arguments', () => {
   test('delete: beforeDelete gets only the id, afterDelete the soft-deleted row', async () => {
     await requestFor('afterDelete', '/tx');
     expect(callNames()).toEqual(['beforeDelete', 'afterDelete']);
-    expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(['ctx', 'id']);
+    expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(['context', 'id']);
     expect(calls[1]?.args).toMatchObject({ id: 1, row: { id: 1, deletedAt: expect.any(Date) } });
   });
 

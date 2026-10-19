@@ -65,7 +65,7 @@ global setup. `examples/users.ts` is a runnable version (`npx tsx examples/users
 | Option | Meaning |
 |---|---|
 | `service` | The `createService` result. Its entity drives the routes and schemas. |
-| `context?` | `(request) => TCtx \| undefined` (may be async). Maps your auth (e.g. `request.user`) to what rules see. |
+| `context?` | `(request) => TContext \| undefined` (may be async). Maps your auth (e.g. `request.user`) to what rules see. |
 | `authorize?` | Rules per operation (`list`, `get`, `create`, `update`, `delete`) and `'*'`. Without it, routes are open and one startup warning is logged; with it but no `context`, every request is anonymous (also warned). |
 | `operations?` | `{ only?: Operation[] }` or `{ except?: Operation[] }` to register a subset. |
 | `hooks?` | Any Fastify request hook (`onRequest`, `preValidation`, `preHandler`, `onSend`, `onResponse`, `onError`…), an async function or an array of them (no `done` callbacks). Added to the plugin scope, so they run on generated and `extend` routes (rate limits, metrics…). `preHandler` hooks run after `authorize`. |
@@ -116,17 +116,17 @@ Tip: name the entity's types instead of repeating them: `type User = Row<typeof 
 ## Finder methods
 
 Each operator in `filterable` generates one typed method on the repository and on the service. The
-service ones take a `ctx` after the value(s) and run through the service's `findMany`, so they get its
+service ones take a `context` after the value(s) and run through the service's `findMany`, so they get its
 logging, the caller's scope, soft delete and the request transaction.
 
 | Config | Repository | Service |
 |---|---|---|
-| `status: ['eq']` | `findByStatus(value, options?)` | `findByStatus(value, ctx, options?)` |
-| `status: ['in']` | `findByStatusIn(values, options?)` | `findByStatusIn(values, ctx, options?)` |
-| `name: ['ilike']` | `findByNameContaining(text, options?)`: case-insensitive, `%` and `_` literal | same, plus `ctx` |
-| `createdAt: ['gte']` | `findByCreatedAtFrom(date, options?)` | same, plus `ctx` |
-| `createdAt: ['lte']` | `findByCreatedAtUntil(date, options?)` | same, plus `ctx` |
-| both `gte` and `lte` | also `findByCreatedAtBetween(from, to, options?)`, both ends included | same, plus `ctx` |
+| `status: ['eq']` | `findByStatus(value, options?)` | `findByStatus(value, context, options?)` |
+| `status: ['in']` | `findByStatusIn(values, options?)` | `findByStatusIn(values, context, options?)` |
+| `name: ['ilike']` | `findByNameContaining(text, options?)`: case-insensitive, `%` and `_` literal | same, plus `context` |
+| `createdAt: ['gte']` | `findByCreatedAtFrom(date, options?)` | same, plus `context` |
+| `createdAt: ['lte']` | `findByCreatedAtUntil(date, options?)` | same, plus `context` |
+| both `gte` and `lte` | also `findByCreatedAtBetween(from, to, options?)`, both ends included | same, plus `context` |
 
 The primary key gets no `eq` finder: that is `findById`. Values are typed from the column (enum
 values, `Date` for timestamps, an array for `In`). A finder returns the same page as `findMany`, and
@@ -135,7 +135,7 @@ values, `Date` for timestamps, an array for `In`). A finder returns the same pag
 condition. Generated names count as built-ins, so reusing one in `.extend()` is a compile error.
 
 ```ts
-const { items } = await flightService.findByStatusIn(['boarding', 'departed'], ctx, { columns: ['id', 'flightNumber'] });
+const { items } = await flightService.findByStatusIn(['boarding', 'departed'], context, { columns: ['id', 'flightNumber'] });
 await flightRepo.findByScheduledDepartureBetween(from, to, { sort: ['flightNumber'], limit: 20 });
 ```
 
@@ -178,8 +178,8 @@ tie-breaker so pages are stable. In code, `sort` takes any visible column, with 
 the service method for each use case; `defaultSort` is only the fallback:
 
 ```ts
-departuresBoard: (originCode: string, ctx: ServiceContext<Caller>) =>
-  base.findByOriginCode(originCode, ctx, { sort: ['status', 'scheduledDeparture'] }),
+departuresBoard: (originCode: string, context: ServiceContext<Caller>) =>
+  base.findByOriginCode(originCode, context, { sort: ['status', 'scheduledDeparture'] }),
 ```
 
 The list route's querystring:
@@ -244,9 +244,9 @@ you tell `crudRoutes` how to turn a request into a context:
 ```ts
 crudRoutes({
   service: postService,
-  context: (req) => req.user ?? undefined,          // TCtx is inferred from this
+  context: (req) => req.user ?? undefined,          // TContext is inferred from this
   authorize: {
-    '*': ({ ctx }) => (ctx ? eq(posts.orgId, ctx.orgId) : false), // no context → 401; SQL → row-level scope
+    '*': ({ context }) => (context ? eq(posts.orgId, context.orgId) : false), // no context → 401; SQL → row-level scope
     delete: requireRole('admin'),                    // also needs admin; false → 403
   },
 });
@@ -255,7 +255,7 @@ crudRoutes({
 `'*'` always applies; an operation rule adds to it. Both must pass, and their SQL scopes are ANDed,
 so above, an admin of another org deleting a post gets a 404.
 
-A rule gets `{ ctx, op, id?, input? }` and returns:
+A rule gets `{ context, op, id?, input? }` and returns:
 
 | Result | Effect |
 |---|---|
@@ -275,9 +275,9 @@ const postEntity = defineEntity(posts, {
 });
 const postService = createService<typeof postEntity, Caller>(createRepository(db, postEntity), {
   hooks: {
-    beforeCreate: ({ input, ctx }) => {
-      if (!ctx.auth) throw new UnauthorizedError();
-      return { ...input, orgId: ctx.auth.orgId };
+    beforeCreate: ({ input, context }) => {
+      if (!context.auth) throw new UnauthorizedError();
+      return { ...input, orgId: context.auth.orgId };
     },
   },
 });
@@ -295,7 +295,7 @@ stored on `request.crudContext` (`{ auth, scope }`).
 | Layer | How | Use it for |
 |---|---|---|
 | Repository | `createRepository(db, entity).extend(({ scoped, table, project, orderBy }) => ({ … }))` | joins, window functions, reports. Base methods, finders included, can't be overridden (compile error). |
-| Service | `createService(repo, { hooks: { beforeCreate, afterCreate, … } })` | stamping `createdBy`/`orgId` from `ctx.auth`, hashing, normalising input, blocking a delete, follow-up writes. See [Service hooks](#service-hooks). |
+| Service | `createService(repo, { hooks: { beforeCreate, afterCreate, … } })` | stamping `createdBy`/`orgId` from `context.auth`, hashing, normalising input, blocking a delete, follow-up writes. See [Service hooks](#service-hooks). |
 | Service | `createService(repo).extend((base) => ({ … }))` | business operations built from the CRUD methods (`delayFlight`, a two-leg booking). Built-in names can't be reused (compile error). |
 | Routes | `crudRoutes({ …, extend: (scope, { service, entity, serviceContext }) => { … } })` | custom endpoints that share the validation, error handler and authorization. |
 
@@ -355,16 +355,16 @@ inside `b`'s factory the first argument already has `a`'s.
 
 Hooks run on every create, update and delete made through the service: the built-in methods, and custom
 service methods that call `base.create`, `base.update` or `base.delete`. Finders and calls on
-`service.repository` skip them. Each hook gets the caller's `ctx` and may be async.
+`service.repository` skip them. Each hook gets the caller's `context` and may be async.
 
 | Hook | Runs | Receives | Returns |
 |---|---|---|---|
-| `beforeCreate` | before the insert | `{ input, ctx }` | the full row to insert |
-| `afterCreate` | after the insert | `{ row, input, ctx }`: the saved row and the client's input | nothing (ignored) |
-| `beforeUpdate` | before the update | `{ id, patch, ctx }` | the changes to save |
-| `afterUpdate` | after the update | `{ id, row, patch, ctx }`: the saved row and the client's changes | nothing (ignored) |
-| `beforeDelete` | before the delete | `{ id, ctx }`; read the row yourself if you need it | nothing; throw to block |
-| `afterDelete` | after the delete, soft or hard | `{ id, row, ctx }`: the deleted row | nothing (ignored) |
+| `beforeCreate` | before the insert | `{ input, context }` | the full row to insert |
+| `afterCreate` | after the insert | `{ row, input, context }`: the saved row and the client's input | nothing (ignored) |
+| `beforeUpdate` | before the update | `{ id, patch, context }` | the changes to save |
+| `afterUpdate` | after the update | `{ id, row, patch, context }`: the saved row and the client's changes | nothing (ignored) |
+| `beforeDelete` | before the delete | `{ id, context }`; read the row yourself if you need it | nothing; throw to block |
+| `afterDelete` | after the delete, soft or hard | `{ id, row, context }`: the deleted row | nothing (ignored) |
 
 Throw from any hook to fail the call; its error is logged like the write's own. Inside a
 [transaction](#transactions) (every route, by default) a throwing hook rolls back the write as well.
@@ -374,16 +374,16 @@ Work done outside the database, such as sending emails or events, can't be rolle
 
 `service.extend((base) => ({ … }))` adds your own operations to the service. `base` is the service so
 far (the five CRUD methods, the finders, `entity`, `repository` and earlier extensions). The methods are plain
-functions: nothing is wrapped for you. Take a `ctx` and pass it to the `base` built-ins, and hooks,
+functions: nothing is wrapped for you. Take a `context` and pass it to the `base` built-ins, and hooks,
 logging, the caller's scope and the request's transaction all apply:
 
 ```ts
 const flightService = createService<typeof flightEntity, Caller, typeof flightRepo>(flightRepo, { hooks }).extend((base) => ({
-  delayFlight: async (id: number, minutes: number, ctx: ServiceContext<Caller>) => {
-    const flight = await base.findById(id, { columns: ['scheduledDeparture', 'scheduledArrival'] }, ctx);
+  delayFlight: async (id: number, minutes: number, context: ServiceContext<Caller>) => {
+    const flight = await base.findById(id, { columns: ['scheduledDeparture', 'scheduledArrival'] }, context);
     if (!flight) throw new NotFoundError('flights not found');
     const shift = (date: Date) => new Date(date.getTime() + minutes * 60_000);
-    return base.update(id, { scheduledDeparture: shift(flight.scheduledDeparture), scheduledArrival: shift(flight.scheduledArrival) }, ctx);
+    return base.update(id, { scheduledDeparture: shift(flight.scheduledDeparture), scheduledArrival: shift(flight.scheduledArrival) }, context);
   },
 }));
 // in crudRoutes({ service: flightService, …, extend: (scope, { service, serviceContext }) => { … } })
@@ -391,14 +391,14 @@ scope.post('/:id/delay', { config: { crudOperation: 'update' }, … }, (request)
   service.delayFlight(request.params.id, request.body.minutes, serviceContext(request)));
 ```
 
-A plain function that takes the service and a `ctx` works just as well, e.g.
-`delayFlight(flightService, id, 30, ctx)`. Use `.extend()` when you want the operation to travel with
+A plain function that takes the service and a `context` works just as well, e.g.
+`delayFlight(flightService, id, 30, context)`. Use `.extend()` when you want the operation to travel with
 the service, so `crudRoutes`' `extend` and other callers reach it as `service.delayFlight`.
 
 The service keeps the repository's full type as `service.repository`, so custom routes reach your
 `extend` methods through the `service` that `extend` receives; there is no separate `repository`
 option. Calls on `service.repository` skip the service's hooks and its `repository call` log line. If
-you pass `createService`'s type arguments yourself (e.g. to type `ctx.auth`), add the repository's type
+you pass `createService`'s type arguments yourself (e.g. to type `context.auth`), add the repository's type
 third, or `service.repository` only knows the base methods:
 
 ```ts
@@ -435,16 +435,16 @@ ones and every `extend` route. If the handler throws, everything the request wro
 the error response is sent as usual; if it succeeds, the transaction commits. This is what makes a
 custom route with several writes all-or-nothing.
 
-`serviceContext(request)` carries the transaction (`ctx.tx`), so pass it to every call in the route:
+`serviceContext(request)` carries the transaction (`context.tx`), so pass it to every call in the route:
 other entities' services, `service.repository` methods, and your own helpers. Service hooks get the
-same `ctx`, so a write in `beforeCreate` joins it too, and a throwing `afterCreate` rolls back the insert. Custom repository methods join it too when
-they take the `ctx` and build on `scoped(ctx)` (see [Extension points](#extension-points)).
+same `context`, so a write in `beforeCreate` joins it too, and a throwing `afterCreate` rolls back the insert. Custom repository methods join it too when
+they take the `context` and build on `scoped(context)` (see [Extension points](#extension-points)).
 
 ```ts
 scope.post('/rotation', { config: { crudOperation: 'create' }, schema: { body } }, async (request, reply) => {
-  const ctx = serviceContext(request);
-  const outbound = await service.create(request.body.outbound, ctx);
-  const inbound = await service.create(request.body.inbound, ctx); // throws 409 → outbound is rolled back too
+  const context = serviceContext(request);
+  const outbound = await service.create(request.body.outbound, context);
+  const inbound = await service.create(request.body.inbound, context); // throws 409 → outbound is rolled back too
   reply.status(201);
   return [outbound, inbound];
 });
@@ -459,10 +459,10 @@ scope.post('/rotation', { config: { crudOperation: 'create' }, schema: { body } 
 - The transaction holds one pooled connection for the whole handler, so keep slow work (HTTP calls to
   other services) out of handlers. A query on the root `db` inside a handler runs outside the
   transaction; with a single-connection driver such as PGlite it waits for it forever.
-- To open your own nested scope, call `ctx.tx.transaction(…)`: drizzle makes it a savepoint.
+- To open your own nested scope, call `context.tx.transaction(…)`: drizzle makes it a savepoint.
 - Let database errors propagate. A failed statement aborts the transaction, so a handler that catches one
   and still returns gets a success response for writes Postgres rolled back. To recover from a failure,
-  run that statement in a savepoint (`ctx.tx.transaction(…)`).
+  run that statement in a savepoint (`context.tx.transaction(…)`).
 
 Turn it off with `crudRoutes({ service, transaction: false })`: each statement then commits on its own,
 as before, and `reply.send()` is allowed.

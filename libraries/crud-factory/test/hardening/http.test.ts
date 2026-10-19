@@ -18,9 +18,9 @@ const userService = createService(createRepository(db, userEntity), {
 });
 const postService = createService<typeof postEntity, TestUser>(createRepository(db, postEntity), {
   hooks: {
-    beforeCreate: ({ input, ctx }) => {
-      if (!ctx.auth) throw new UnauthorizedError();
-      return { ...input, orgId: ctx.auth.orgId };
+    beforeCreate: ({ input, context }) => {
+      if (!context.auth) throw new UnauthorizedError();
+      return { ...input, orgId: context.auth.orgId };
     },
   },
 });
@@ -28,7 +28,7 @@ const postService = createService<typeof postEntity, TestUser>(createRepository(
 const alice: TestUser = { id: 1, orgId: 10, roles: ['admin'] };
 const dave: TestUser = { id: 4, orgId: 10, roles: ['member'] };
 const carol: TestUser = { id: 3, orgId: 20, roles: ['admin'] };
-const tenantScope: AuthorizeRule<TestUser> = ({ ctx }) => (ctx ? eq(posts.orgId, ctx.orgId) : false);
+const tenantScope: AuthorizeRule<TestUser> = ({ context }) => (context ? eq(posts.orgId, context.orgId) : false);
 const denyAll: AuthorizeRule<TestUser> = () => false;
 const GENERIC_500 = { code: 'INTERNAL_SERVER_ERROR', message: 'Internal Server Error' };
 

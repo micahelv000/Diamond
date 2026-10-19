@@ -111,7 +111,7 @@ describe('repository finders', () => {
 });
 
 describe('service finders', () => {
-  test('return the same rows through ctx and log like findMany', async () => {
+  test('return the same rows through context and log like findMany', async () => {
     const { log, entries } = fakeLogger();
     expect(names(await service.findByStatusIn(['invited', 'banned'], { log }))).toEqual(['Carol', 'Bob']);
     expect(names(await service.findByCreatedAtBetween(day('2026-02-01'), day('2026-03-01'), { log }, { sort: ['name'] }))).toEqual(['Bob', 'Carol']);
@@ -123,7 +123,7 @@ describe('service finders', () => {
     expect(entries.filter((entry) => entry.message === 'sql')).toHaveLength(3);
   });
 
-  test('honour ctx.scope and soft delete', async () => {
+  test('honour context.scope and soft delete', async () => {
     const { log } = fakeLogger();
     expect(names(await service.findByStatus('active', { log, scope: eq(users.orgId, 2) }))).toEqual([]);
     expect(names(await service.findByOrgId(2, { log, scope: eq(users.orgId, 2) }))).toEqual(['Carol']);
@@ -195,9 +195,9 @@ describe('service finders in a route transaction', () => {
           extend: (scope, { service: users, serviceContext }) => {
             // Creates a row, finds it with a finder in the same transaction, then fails.
             scope.post('/create-then-find', { config: { crudOperation: 'create' } }, async (request) => {
-              const ctx = serviceContext(request);
-              await users.create({ email: 'new@x.io', name: 'Newbie', orgId: 1 }, ctx);
-              const found = await users.findByNameContaining('newbie', ctx, { columns: ['name'] });
+              const context = serviceContext(request);
+              await users.create({ email: 'new@x.io', name: 'Newbie', orgId: 1 }, context);
+              const found = await users.findByNameContaining('newbie', context, { columns: ['name'] });
               throw new ConflictError(`found ${found.items.map((item) => item.name).join(',')}`);
             });
           },

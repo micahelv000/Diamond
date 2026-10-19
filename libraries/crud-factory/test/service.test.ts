@@ -23,7 +23,7 @@ function fakeLogger() {
 
 const service = createService<typeof userEntity, Auth>(createRepository(db, userEntity), {
   hooks: {
-    beforeCreate: ({ input, ctx }) => ({ ...input, passwordHash: 'hashed', orgId: ctx.auth?.orgId ?? 0 }),
+    beforeCreate: ({ input, context }) => ({ ...input, passwordHash: 'hashed', orgId: context.auth?.orgId ?? 0 }),
     beforeUpdate: ({ patch }) => ({ ...patch, name: patch.name?.trim() }),
   },
 });
@@ -35,13 +35,13 @@ beforeEach(async () => {
 describe('createService', () => {
   test('hooks transform input before the repository call', async () => {
     const { log } = fakeLogger();
-    const ctx = { log, auth: { userId: 1, orgId: 7 } };
-    const created = await service.create({ email: 'a@b.c', name: 'A', orgId: 1 }, ctx);
+    const context = { log, auth: { userId: 1, orgId: 7 } };
+    const created = await service.create({ email: 'a@b.c', name: 'A', orgId: 1 }, context);
     expect(created.orgId).toBe(7);
     const [stored] = await db.select({ passwordHash: users.passwordHash }).from(users);
     expect(stored?.passwordHash).toBe('hashed');
 
-    const updated = await service.update(created.id, { name: '  Trimmed  ' }, ctx);
+    const updated = await service.update(created.id, { name: '  Trimmed  ' }, context);
     expect(updated.name).toBe('Trimmed');
   });
 
@@ -59,7 +59,7 @@ describe('createService', () => {
     expect(JSON.stringify(entries)).not.toContain('hashed');
   });
 
-  test('passes ctx.log down so the repository logs each SQL statement without its values', async () => {
+  test('passes context.log down so the repository logs each SQL statement without its values', async () => {
     const { log, entries } = fakeLogger();
     await service.create({ email: 'sql@b.c', name: 'A', orgId: 1 }, { log });
     const sqlLines = entries.filter((entry) => entry.message === 'sql');
@@ -85,7 +85,7 @@ describe('createService', () => {
     expect(await extended.repository.emails()).toEqual([{ email: 'repo@b.c' }]);
   });
 
-  test('logs client errors (4xx) at debug with their code and passes ctx.scope through', async () => {
+  test('logs client errors (4xx) at debug with their code and passes context.scope through', async () => {
     const { log, entries } = fakeLogger();
     const created = await service.create({ email: 'a@b.c', name: 'A', orgId: 1 }, { log });
     const scope = eq(users.orgId, 99);
@@ -96,7 +96,7 @@ describe('createService', () => {
 
 describe('service.extend', () => {
   const extended = service.extend((base) => ({
-    rename: (id: number, name: string, ctx: ServiceContext<Auth>) => base.update(id, { name }, ctx),
+    rename: (id: number, name: string, context: ServiceContext<Auth>) => base.update(id, { name }, context),
   }));
 
   test('adds methods that run through the real service and repository, hooks included', async () => {
@@ -120,9 +120,9 @@ describe('service.extend', () => {
   test('chained extends both work, and the second sees the first through base', async () => {
     const { log } = fakeLogger();
     const chained = extended.extend((base) => ({
-      renameTwice: async (id: number, ctx: ServiceContext<Auth>) => {
-        await base.rename(id, 'First', ctx);
-        return base.rename(id, 'Second', ctx);
+      renameTwice: async (id: number, context: ServiceContext<Auth>) => {
+        await base.rename(id, 'First', context);
+        return base.rename(id, 'Second', context);
       },
     }));
     const created = await chained.create({ email: 'z@b.c', name: 'C', orgId: 1 }, { log });
@@ -165,9 +165,9 @@ describe('write hooks', () => {
           events.push('afterUpdate');
           calls.afterUpdate = args;
         },
-        beforeDelete: async ({ id, ctx }) => {
+        beforeDelete: async ({ id, context }) => {
           events.push('beforeDelete');
-          const row = await createRepository(db, userEntity).findById(id, { columns: ['status'], tx: ctx.tx });
+          const row = await createRepository(db, userEntity).findById(id, { columns: ['status'], tx: context.tx });
           if (row?.status === 'active') throw new ConflictError('Active users stay');
         },
         afterDelete: (args) => {
@@ -176,46 +176,46 @@ describe('write hooks', () => {
         },
       },
     });
-    return { events, calls, recorded, ctx: { log, auth: { userId: 1, orgId: 7 } } };
+    return { events, calls, recorded, context: { log, auth: { userId: 1, orgId: 7 } } };
   }
 
   test('afterCreate runs after the insert with the saved row and the client input', async () => {
-    const { events, calls, recorded, ctx } = recordingService();
+    const { events, calls, recorded, context } = recordingService();
     const input = { email: 'a@b.c', name: 'A', orgId: 1 };
-    const row = await recorded.create(input, ctx);
+    const row = await recorded.create(input, context);
     expect(events).toEqual(['beforeCreate', 'sql', 'afterCreate']);
     expect(row.id).toEqual(expect.any(Number));
-    expect(calls.afterCreate).toEqual({ row, input, ctx });
+    expect(calls.afterCreate).toEqual({ row, input, context });
   });
 
   test('afterUpdate runs after the update with the saved row and the client patch', async () => {
-    const { events, calls, recorded, ctx } = recordingService();
-    const created = await recorded.create({ email: 'a@b.c', name: 'A', orgId: 1 }, ctx);
+    const { events, calls, recorded, context } = recordingService();
+    const created = await recorded.create({ email: 'a@b.c', name: 'A', orgId: 1 }, context);
     events.length = 0;
-    const row = await recorded.update(created.id, { name: 'B' }, ctx);
+    const row = await recorded.update(created.id, { name: 'B' }, context);
     expect(events).toEqual(['beforeUpdate', 'sql', 'afterUpdate']);
     expect(row.name).toBe('B');
-    expect(calls.afterUpdate).toEqual({ id: created.id, row, patch: { name: 'B' }, ctx });
+    expect(calls.afterUpdate).toEqual({ id: created.id, row, patch: { name: 'B' }, context });
   });
 
   test('beforeDelete runs first, and afterDelete gets the soft-deleted row', async () => {
-    const { events, calls, recorded, ctx } = recordingService();
-    const created = await recorded.create({ email: 'a@b.c', name: 'A', orgId: 1 }, ctx);
+    const { events, calls, recorded, context } = recordingService();
+    const created = await recorded.create({ email: 'a@b.c', name: 'A', orgId: 1 }, context);
     events.length = 0;
-    const row = await recorded.delete(created.id, ctx);
+    const row = await recorded.delete(created.id, context);
     // The hook's own read is not logged because it gets no `log`.
     expect(events).toEqual(['beforeDelete', 'sql', 'afterDelete']);
     expect(row).toMatchObject({ id: created.id, email: 'a@b.c', deletedAt: expect.any(Date) });
-    expect(calls.afterDelete).toEqual({ id: created.id, row, ctx });
+    expect(calls.afterDelete).toEqual({ id: created.id, row, context });
   });
 
   test('beforeDelete that throws blocks the delete', async () => {
-    const { events, recorded, ctx } = recordingService();
-    const created = await recorded.create({ email: 'a@b.c', name: 'A', orgId: 1, status: 'active' }, ctx);
+    const { events, recorded, context } = recordingService();
+    const created = await recorded.create({ email: 'a@b.c', name: 'A', orgId: 1, status: 'active' }, context);
     events.length = 0;
-    await expect(recorded.delete(created.id, ctx)).rejects.toBeInstanceOf(ConflictError);
+    await expect(recorded.delete(created.id, context)).rejects.toBeInstanceOf(ConflictError);
     expect(events).toEqual(['beforeDelete']);
-    expect(await recorded.findById(created.id, {}, ctx)).toMatchObject({ id: created.id });
+    expect(await recorded.findById(created.id, {}, context)).toMatchObject({ id: created.id });
   });
 
   test('afterDelete gets the hard-deleted row', async () => {
@@ -232,13 +232,13 @@ describe('write hooks', () => {
   });
 
   test('a custom method that calls base.update runs afterUpdate', async () => {
-    const { events, recorded, ctx } = recordingService();
+    const { events, recorded, context } = recordingService();
     const extended = recorded.extend((base) => ({
       rename: (id: number, name: string, context: ServiceContext<Auth>) => base.update(id, { name }, context),
     }));
-    const created = await extended.create({ email: 'a@b.c', name: 'A', orgId: 1 }, ctx);
+    const created = await extended.create({ email: 'a@b.c', name: 'A', orgId: 1 }, context);
     events.length = 0;
-    await extended.rename(created.id, 'Renamed', ctx);
+    await extended.rename(created.id, 'Renamed', context);
     expect(events).toEqual(['beforeUpdate', 'sql', 'afterUpdate']);
   });
 });

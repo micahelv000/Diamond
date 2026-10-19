@@ -13,14 +13,14 @@ export interface CrudContext {
 }
 
 /** Returns the current user for a request, or `undefined` for an anonymous caller. May be async. */
-export type ContextMapper<TCtx> = (request: FastifyRequest) => TCtx | undefined | Promise<TCtx | undefined>;
+export type ContextMapper<TContext> = (request: FastifyRequest) => TContext | undefined | Promise<TContext | undefined>;
 
 /** Options for `createAuthorizationHook`. */
-export interface AuthorizationHookOptions<TCtx> {
+export interface AuthorizationHookOptions<TContext> {
   /** Returns the current user. If `undefined`, every caller is anonymous. */
-  context: ContextMapper<TCtx> | undefined;
+  context: ContextMapper<TContext> | undefined;
   /** The rules to check. If `undefined`, every request is allowed. */
-  authorize: AuthorizeMap<TCtx> | undefined;
+  authorize: AuthorizeMap<TContext> | undefined;
 }
 
 declare module 'fastify' {
@@ -47,7 +47,7 @@ function paramId(params: unknown): number | undefined {
  * Builds the preHandler that checks `authorize` on routes with `config.crudOperation`.
  * It throws 401 or 403 when a rule blocks the request, otherwise it stores the result on `request.crudContext`.
  */
-export function createAuthorizationHook<TCtx>(options: AuthorizationHookOptions<TCtx>): preHandlerAsyncHookHandler {
+export function createAuthorizationHook<TContext>(options: AuthorizationHookOptions<TContext>): preHandlerAsyncHookHandler {
   const { context, authorize } = options;
 
   return async function authorizeCrudOperation(request) {
@@ -58,7 +58,7 @@ export function createAuthorizationHook<TCtx>(options: AuthorizationHookOptions<
     const result = await evaluateAuthorization({
       rules: authorize,
       op,
-      ctx: auth,
+      context: auth,
       id: paramId(request.params),
       input: op === 'create' || op === 'update' ? request.body : undefined,
     });

@@ -20,9 +20,9 @@ const userService = createService(createRepository(db, userEntity), {
 // The tenant column is stamped from the caller, never taken from the body.
 const postService = createService<typeof postEntity, TestUser>(createRepository(db, postEntity), {
   hooks: {
-    beforeCreate: ({ input, ctx }) => {
-      if (!ctx.auth) throw new UnauthorizedError();
-      return { ...input, orgId: ctx.auth.orgId };
+    beforeCreate: ({ input, context }) => {
+      if (!context.auth) throw new UnauthorizedError();
+      return { ...input, orgId: context.auth.orgId };
     },
   },
 });
@@ -30,7 +30,7 @@ const postService = createService<typeof postEntity, TestUser>(createRepository(
 const alice: TestUser = { id: 1, orgId: 10, roles: ['admin'] };
 const bob: TestUser = { id: 2, orgId: 20, roles: ['member'] };
 const carol: TestUser = { id: 3, orgId: 20, roles: ['admin'] };
-const tenantScope: AuthorizeRule<TestUser> = ({ ctx }) => (ctx ? eq(posts.orgId, ctx.orgId) : false);
+const tenantScope: AuthorizeRule<TestUser> = ({ context }) => (context ? eq(posts.orgId, context.orgId) : false);
 
 const newUser = (overrides: Record<string, unknown> = {}) => ({
   email: 'ann@example.com',
@@ -508,11 +508,11 @@ describe('every route must choose crudOperation or crudPublic', () => {
 
 describe('crudPublic and tagged custom routes', () => {
   let leakedServiceContext: ((request: FastifyRequest) => ServiceContext<TestUser>) | undefined;
-  const contextFlags = (ctx: ServiceContext<TestUser>) => ({
-    userId: ctx.auth?.id ?? null,
-    scoped: ctx.scope !== undefined,
-    inTransaction: ctx.tx !== undefined,
-    hasLogger: typeof ctx.log.debug === 'function',
+  const contextFlags = (context: ServiceContext<TestUser>) => ({
+    userId: context.auth?.id ?? null,
+    scoped: context.scope !== undefined,
+    inTransaction: context.tx !== undefined,
+    hasLogger: typeof context.log.debug === 'function',
   });
   const app = useServer({
     register: async (app) => {
@@ -524,10 +524,10 @@ describe('crudPublic and tagged custom routes', () => {
           extend: (scope, { service, serviceContext }) => {
             leakedServiceContext = serviceContext;
             scope.get('/public', { config: { crudPublic: true } }, async (request) => {
-              const ctx = serviceContext(request);
+              const context = serviceContext(request);
               // Unscoped, so it counts every org's posts.
-              const { items } = await service.findMany({}, ctx);
-              return { ...contextFlags(ctx), visiblePosts: items.length };
+              const { items } = await service.findMany({}, context);
+              return { ...contextFlags(context), visiblePosts: items.length };
             });
             scope.get('/tagged', { config: { crudOperation: 'list' } }, (request) => contextFlags(serviceContext(request)));
           },

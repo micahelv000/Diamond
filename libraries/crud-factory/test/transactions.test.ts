@@ -13,18 +13,18 @@ const userRepo = createRepository(db, userEntity);
 const userService = createService<typeof userEntity, TestUser>(userRepo, {
   hooks: {
     // Writes a row of its own, then fails for one name: the hook's write must be rolled back too.
-    beforeCreate: async ({ input, ctx }) => {
+    beforeCreate: async ({ input, context }) => {
       if (input.name === 'Hook fails') {
-        await userRepo.create({ ...input, email: `audit-${input.email}`, passwordHash: 'h' }, { tx: ctx.tx, log: ctx.log });
+        await userRepo.create({ ...input, email: `audit-${input.email}`, passwordHash: 'h' }, { tx: context.tx, log: context.log });
         throw new ConflictError('Rejected after a write');
       }
       return { ...input, passwordHash: 'secret-hash' };
     },
   },
 });
-// A custom method: a plain function over `base.update`, so it joins whatever transaction `ctx` carries.
+// A custom method: a plain function over `base.update`, so it joins whatever transaction `context` carries.
 const extendedUserService = userService.extend((base) => ({
-  rename: (id: number, name: string, ctx: ServiceContext<TestUser>) => base.update(id, { name }, ctx),
+  rename: (id: number, name: string, context: ServiceContext<TestUser>) => base.update(id, { name }, context),
 }));
 // A custom query that writes through `scoped(options).db`, so it joins whatever transaction the options carry.
 const customUserRepo = userRepo.extend(({ scoped, table }) => ({
@@ -61,15 +61,15 @@ function userRoutes(transaction: boolean | undefined) {
     extend: (scope, { service, serviceContext }) => {
       // Two creates; the second one reuses the email, so it fails with a 409 after the first succeeded.
       scope.post('/pair', { config: { crudOperation: 'create' } }, async (request) => {
-        const ctx = serviceContext(request);
-        await service.create(newUser('first@x.io', 'First'), ctx);
-        return service.create(newUser('first@x.io', 'Second'), ctx);
+        const context = serviceContext(request);
+        await service.create(newUser('first@x.io', 'First'), context);
+        return service.create(newUser('first@x.io', 'Second'), context);
       });
       // Writes to two entities through their own services, then fails.
       scope.post('/with-post', { config: { crudOperation: 'create' } }, async (request) => {
-        const ctx = serviceContext(request);
-        const user = await service.create(newUser('author@x.io'), ctx);
-        await postService.create({ authorId: user.id, title: 'Hello' }, ctx);
+        const context = serviceContext(request);
+        const user = await service.create(newUser('author@x.io'), context);
+        await postService.create({ authorId: user.id, title: 'Hello' }, context);
         throw new ConflictError('Failed after both writes');
       });
       // Renames through the custom service method, then fails: the rename must be rolled back.
@@ -121,7 +121,7 @@ describe('transaction: true (default)', () => {
     expect((await db.select({ name: users.name }).from(users))[0]?.name).toBe('Ann');
   });
 
-  test('a custom query written with scoped(ctx) rolls back with the request transaction', async () => {
+  test('a custom query written with scoped(context) rolls back with the request transaction', async () => {
     const response = await app().inject({ method: 'POST', url: '/users/custom-query', headers: as(admin) });
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ code: 'CONFLICT', message: 'Failed after the custom query' });

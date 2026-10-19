@@ -16,7 +16,7 @@ type UserEntity = typeof userEntity;
 type Status = 'active' | 'invited' | 'banned';
 const repository = createRepository(drizzle(), userEntity);
 const service = createService<UserEntity, { orgId: number }>(repository);
-declare const ctx: ServiceContext<{ orgId: number }>;
+declare const context: ServiceContext<{ orgId: number }>;
 
 describe('repository finders', () => {
   test('one typed method per declared operator, returning a findMany page', () => {
@@ -104,16 +104,16 @@ describe('repository finders', () => {
 });
 
 describe('service finders', () => {
-  test('the same names, with ctx after the value(s)', async () => {
+  test('the same names, with context after the value(s)', async () => {
     expectTypeOf(service.findByStatusIn).parameter(0).toEqualTypeOf<Status[]>();
     expectTypeOf(service.findByStatusIn).parameter(1).toEqualTypeOf<ServiceContext<{ orgId: number }>>();
     expectTypeOf(service.findByCreatedAtBetween).parameter(2).toEqualTypeOf<ServiceContext<{ orgId: number }>>();
-    const { items } = await service.findByNameContaining('ann', ctx, { columns: ['name'], sort: ['-email'] });
+    const { items } = await service.findByNameContaining('ann', context, { columns: ['name'], sort: ['-email'] });
     expectTypeOf(items).toEqualTypeOf<{ name: string }[]>();
-    expectTypeOf(service.findByOrgId(1, ctx)).resolves.toEqualTypeOf<ListResult<UserEntity>>();
-    // @ts-expect-error -- the ctx is required
+    expectTypeOf(service.findByOrgId(1, context)).resolves.toEqualTypeOf<ListResult<UserEntity>>();
+    // @ts-expect-error -- the context is required
     void service.findByStatus('active', { columns: ['id'] });
-    // @ts-expect-error -- the ctx's auth type must match the service's
+    // @ts-expect-error -- the context's auth type must match the service's
     void service.findByStatus('active', { log: console, auth: { orgId: 'one' } });
   });
 
@@ -131,7 +131,7 @@ describe('service finders', () => {
   });
 
   test('a finder page holds visible rows', async () => {
-    const { items } = await service.findByStatus('active', ctx);
+    const { items } = await service.findByStatus('active', context);
     expectTypeOf(items).toEqualTypeOf<Row<UserEntity>[]>();
   });
 });

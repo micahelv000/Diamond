@@ -162,7 +162,7 @@ type ServiceFinders<E, TAuth> = ServiceValueFinders<E, TAuth> & ServiceRangeFind
 ```
 
 `&` (an intersection) merges the two objects into one with all the methods. `RepositoryFinders` is built
-the same way. The only difference is that repository finders take no `ctx` argument.
+the same way. The only difference is that repository finders take no `context` argument.
 
 ## What a single finder looks like (`ServiceFinder`)
 
@@ -170,7 +170,7 @@ the same way. The only difference is that repository finders take no `ctx` argum
 type ServiceFinder<E, TAuth, Value> = [Value] extends [unknown]
   ? <K extends VisibleKey<E> = VisibleKey<E>>(
       value: Value,
-      ctx: ServiceContext<TAuth>,
+      context: ServiceContext<TAuth>,
       options?: ListOptions<E, K>,
     ) => Promise<ListResult<E, K>>
   : never;
@@ -179,14 +179,14 @@ type ServiceFinder<E, TAuth, Value> = [Value] extends [unknown]
 Two details are worth explaining.
 
 **The `<K …>` generic** makes the `columns` option narrow the result. If you call
-`findByStatusIn([...], ctx, { columns: ['id', 'flightNumber'] })`, TypeScript infers `K` as
+`findByStatusIn([...], context, { columns: ['id', 'flightNumber'] })`, TypeScript infers `K` as
 `'id' | 'flightNumber'`, and each returned row only has those two fields. Without `columns`, `K` defaults to
 every visible column.
 
 **`[Value] extends [unknown] ? … : never` is always true.** It changes nothing about the type. It is only
 there for editor hovers. When a type alias is used directly, editors show its name, so hovering a finder
 would show `ServiceFinder<Entity<…a very long table type…>, …>` and hide the parameter names. A conditional
-type gets resolved first, so the hover shows the actual function: `(value: …, ctx: …, options?: …) => …`.
+type gets resolved first, so the hover shows the actual function: `(value: …, context: …, options?: …) => …`.
 
 The brackets around `Value` matter. Without them, a conditional type is checked once for each member of a
 union, so for a column whose type is `'scheduled' | 'boarding'`, the result would become a union of several

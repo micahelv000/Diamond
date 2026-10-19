@@ -60,9 +60,9 @@ const userService = createService(createRepository(db, userEntity), {
 });
 const postService = createService<typeof postEntity, Caller>(createRepository(db, postEntity), {
   hooks: {
-    beforeCreate: ({ input, ctx }) => {
-      if (!ctx.auth) throw new UnauthorizedError();
-      return { ...input, orgId: ctx.auth.orgId };
+    beforeCreate: ({ input, context }) => {
+      if (!context.auth) throw new UnauthorizedError();
+      return { ...input, orgId: context.auth.orgId };
     },
   },
 });
@@ -80,12 +80,12 @@ app.addHook('onRequest', async (request) => {
   request.user = header === 'admin' ? { id: 1, orgId: 10, roles: ['admin'] } : header === 'member' ? { id: 2, orgId: 20, roles: [] } : null;
 });
 
-const context = (request: { user: Caller | null }) => request.user ?? undefined;
-const userRoutes = crudRoutes({ service: userService, context, authorize: { '*': requireAuth, create: requireRole('admin') } });
+const callerOf = (request: { user: Caller | null }) => request.user ?? undefined;
+const userRoutes = crudRoutes({ service: userService, context: callerOf, authorize: { '*': requireAuth, create: requireRole('admin') } });
 const postRoutes = crudRoutes({
   service: postService,
-  context,
-  authorize: { '*': ({ ctx }) => (ctx ? eq(posts.orgId, ctx.orgId) : false) },
+  context: callerOf,
+  authorize: { '*': ({ context }) => (context ? eq(posts.orgId, context.orgId) : false) },
 });
 await app.register(userRoutes, { prefix: '/users' });
 await app.register(postRoutes, { prefix: '/posts' });

@@ -81,25 +81,25 @@ type FastifyHookArguments = Parameters<FastifyHook>;
  */
 export type CrudRoutesPlugin<E extends CrudEntity<E>> = FastifyPluginAsync & CrudCalls<E>;
 
-// How `S`, `E` and `TCtx` are inferred from the options: docs/type-inference.md.
+// How `S`, `E` and `TContext` are inferred from the options: docs/type-inference.md.
 /**
  * Builds an encapsulated Fastify plugin with list, get, create, update and delete routes for one entity.
  * Register it with a prefix, then call those routes with typed bodies and queries: `routes.update(1, { … })`.
  */
-export function crudRoutes<E extends CrudEntity<E>, TCtx = undefined, S = CrudService<E, TCtx>>(
-  options: CrudRoutesOptions<E, TCtx, S>,
+export function crudRoutes<E extends CrudEntity<E>, TContext = undefined, S = CrudService<E, TContext>>(
+  options: CrudRoutesOptions<E, TContext, S>,
 ): CrudRoutesPlugin<E> {
   const { service, context, authorize, operations, hooks = {}, extend, logRequestBody = true, transaction = true } = options;
   const { schemas } = service.entity;
 
-  const serviceContext = (request: FastifyRequest): ServiceContext<TCtx> => {
+  const serviceContext = (request: FastifyRequest): ServiceContext<TContext> => {
     const tx = request.crudTx ?? undefined;
     if (request.crudContext) {
       return {
         log: request.log,
         // Only this scope's preHandler sets `crudContext`, using this scope's `context` mapper,
-        // so `auth` is a `TCtx`.
-        auth: request.crudContext.auth as TCtx | undefined,
+        // so `auth` is a `TContext`.
+        auth: request.crudContext.auth as TContext | undefined,
         scope: request.crudContext.scope,
         tx,
       };
