@@ -17,6 +17,7 @@ export const userEntity = defineEntity(users, {
 // `orgId` is the tenant column: clients can't set or move it; a `beforeCreate` hook stamps it.
 export const postEntity = defineEntity(posts, {
   primaryKey: 'id',
+  softDelete: false,
   create: { omit: ['id', 'createdAt', 'orgId'] },
   update: { omit: ['orgId'] },
   filterable: { authorId: ['eq'] },

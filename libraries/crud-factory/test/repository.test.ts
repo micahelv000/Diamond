@@ -59,13 +59,33 @@ describe('CRUD round trip', () => {
   test('a missing foreign key on create is a 400, a still-referenced row on delete is a 409', async () => {
     await expect(postRepository.create({ authorId: 999, orgId: 1, title: 'Orphan' })).rejects.toMatchObject({ statusCode: 400 });
 
-    // Without soft delete, deleting a user that has posts hits the foreign key.
-    const hardDeleteUsers = createRepository(db, defineEntity(users, { primaryKey: 'id' }));
+    // With soft delete turned off, deleting a user that has posts hits the foreign key.
+    const hardDeleteUsers = createRepository(db, defineEntity(users, { primaryKey: 'id', softDelete: false }));
     const author = await hardDeleteUsers.create(newUser());
     await postRepository.create({ authorId: author.id, orgId: 1, title: 'Keeps the author' });
     const error = await hardDeleteUsers.delete(author.id).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ConflictError);
     expect(error).toMatchObject({ statusCode: 409, message: 'Resource is still referenced' });
+  });
+
+  test('soft delete is on by default for a table with a deletedAt column', async () => {
+    const defaultUsers = createRepository(db, defineEntity(users, { primaryKey: 'id' }));
+    const user = await defaultUsers.create(newUser());
+
+    await defaultUsers.delete(user.id);
+
+    expect(await defaultUsers.findById(user.id)).toBeNull();
+    const [stored] = await db.select({ deletedAt: users.deletedAt }).from(users).where(eq(users.id, user.id));
+    expect(stored?.deletedAt).toBeInstanceOf(Date);
+  });
+
+  test('softDelete: false turns it off, so delete removes the row', async () => {
+    const hardDeleteUsers = createRepository(db, defineEntity(users, { primaryKey: 'id', softDelete: false }));
+    const user = await hardDeleteUsers.create(newUser());
+
+    await hardDeleteUsers.delete(user.id);
+
+    expect(await db.select().from(users).where(eq(users.id, user.id))).toEqual([]);
   });
 
   test('ConflictError takes the message first, and defaults it', () => {
@@ -209,7 +229,7 @@ describe('list limit', () => {
     await db.insert(posts).values(rows);
   });
   const postsWith = (pagination: EntityConfig<typeof posts>['pagination']) =>
-    createRepository(db, defineEntity(posts, { primaryKey: 'id', pagination }));
+    createRepository(db, defineEntity(posts, { primaryKey: 'id', softDelete: false, pagination }));
 
   test('without pagination config, a list defaults to 25 rows', async () => {
     const result = await postRepository.findMany();

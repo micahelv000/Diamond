@@ -89,7 +89,7 @@ describe('date columns', () => {
     at: timestamp({ withTimezone: true }).notNull(),
     endsAt: timestamp('ends_at', { withTimezone: true }),
   });
-  const { schemas: eventSchemas } = defineEntity(events, { primaryKey: 'id' });
+  const { schemas: eventSchemas } = defineEntity(events, { primaryKey: 'id', softDelete: false });
 
   test.each([
     ['null', null],

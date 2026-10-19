@@ -1,5 +1,6 @@
 import { and, eq, getColumns, isNull, sql, type SQL } from 'drizzle-orm';
 import type { PgColumn, PgTable } from 'drizzle-orm/pg-core';
+import { serverOnlyKeys, softDeleteKey } from '../config.ts';
 import { BadRequestError, ConflictError, findPostgresError, mapDatabaseError, NotFoundError } from '../errors.ts';
 import type {
   AnyEntity, Database, ListOptions, Logger, PaginationConfig, PrimaryKeyValue, QueryOptions, RepositoryFinders, Row, VisibleKey,
@@ -81,10 +82,11 @@ export function createRepository<E extends AnyEntity>(db: Database, entity: E): 
   const table: PgTable = entity.table;
   const { config, name } = entity;
   const columns: ColumnMap = getColumns(table);
-  const visible = visibleColumns(table, config.hidden ?? []);
+  const visible = visibleColumns(table, serverOnlyKeys(config));
   const primaryColumn = requireColumn(columns, config.primaryKey);
-  const softDeleteColumn = config.softDelete ? requireColumn(columns, config.softDelete) : undefined;
-  const softDeleteValues = config.softDelete ? { [config.softDelete]: sql`now()` } : undefined;
+  const softDelete = softDeleteKey(config);
+  const softDeleteColumn = softDelete ? requireColumn(columns, softDelete) : undefined;
+  const softDeleteValues = softDelete ? { [softDelete]: sql`now()` } : undefined;
   const defaultSort = config.defaultSort ? [config.defaultSort] : [];
 
   const executorFor = (options: QueryOptions): Database => options.tx ?? db;

@@ -198,15 +198,18 @@ describe('write hooks', () => {
     expect(calls.afterUpdate).toEqual({ id: created.id, row, patch: { name: 'B' }, context });
   });
 
-  test('beforeDelete runs first, and afterDelete gets the soft-deleted row', async () => {
+  test('beforeDelete runs first, and afterDelete gets the soft-deleted row without its deletedAt', async () => {
     const { events, calls, recorded, context } = recordingService();
     const created = await recorded.create({ email: 'a@b.c', name: 'A', orgId: 1 }, context);
     events.length = 0;
     const row = await recorded.delete(created.id, context);
     // The hook's own read is not logged because it gets no `log`.
     expect(events).toEqual(['beforeDelete', 'sql', 'afterDelete']);
-    expect(row).toMatchObject({ id: created.id, email: 'a@b.c', deletedAt: expect.any(Date) });
+    expect(row).toMatchObject({ id: created.id, email: 'a@b.c' });
+    expect(row).not.toHaveProperty('deletedAt');
     expect(calls.afterDelete).toEqual({ id: created.id, row, context });
+    const [stored] = await db.select({ deletedAt: users.deletedAt }).from(users).where(eq(users.id, created.id));
+    expect(stored?.deletedAt).toBeInstanceOf(Date);
   });
 
   test('beforeDelete that throws blocks the delete', async () => {

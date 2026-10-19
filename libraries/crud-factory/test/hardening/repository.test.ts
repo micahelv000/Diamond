@@ -67,8 +67,8 @@ afterAll(() => client.close());
 
 const repo = createRepository(db, itemEntity);
 const capped = createRepository(db, cappedEntity);
-const vendorRepo = createRepository(db, defineEntity(vendors, { primaryKey: 'id' }));
-const eventRepo = createRepository(db, defineEntity(events, { primaryKey: 'id' }));
+const vendorRepo = createRepository(db, defineEntity(vendors, { primaryKey: 'id', softDelete: false }));
+const eventRepo = createRepository(db, defineEntity(events, { primaryKey: 'id', softDelete: false }));
 // A custom query built the documented way: visible columns, through `scoped(options)`.
 const extended = repo.extend(({ scoped, table, project }) => ({
   listRaw: (options: QueryOptions = {}) => {

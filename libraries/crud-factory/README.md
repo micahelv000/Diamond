@@ -58,7 +58,7 @@ global setup. `examples/users.ts` is a runnable version (`npx tsx examples/users
 | `sortable` | column keys | `[]` | Allowed `?sort=` keys on the list route. Code can sort by any visible column. |
 | `defaultSort` | `'col'` or `'-col'` | primary key asc | The order when a query passes no `sort`. Any visible column. |
 | `pagination` | `{ defaultLimit?, maxLimit? }` | `{ defaultLimit: 25, maxLimit: 100 }` | `defaultLimit` applies when no limit is given; `maxLimit` caps every list, from the URL or from code. Set either one to override just that default; lists are never unlimited. |
-| `softDelete` | nullable timestamp column | none | `delete` stamps it; reads skip stamped rows. |
+| `softDelete` | nullable timestamp column, or `false` | `'deletedAt'` | On by default: `delete` stamps the column instead of removing the row, and every read (get, list, finders) skips stamped rows. The column is never sent to or accepted from clients. A table without a `deletedAt` column must name another column or set `false` (a compile error and a startup error otherwise). `false` makes deletes real. |
 
 `crudRoutes(options)`:
 

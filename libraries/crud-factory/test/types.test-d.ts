@@ -16,6 +16,8 @@ import {
   type UpdateInput,
   type VisibleKey,
 } from '../src/index.ts';
+import { integer, pgTable, text } from 'drizzle-orm/pg-core';
+import { defineEntity } from '../src/index.ts';
 import { userEntity } from './fixtures/entities.ts';
 import type { users } from './fixtures/schema.ts';
 
@@ -24,9 +26,10 @@ type UserSelect = typeof users.$inferSelect;
 const repository = createRepository(drizzle(), userEntity);
 
 describe('row types', () => {
-  test('hidden keys are absent', () => {
-    expectTypeOf<Row<UserEntity>>().toEqualTypeOf<Omit<UserSelect, 'passwordHash'>>();
+  test('hidden and soft-delete keys are absent', () => {
+    expectTypeOf<Row<UserEntity>>().toEqualTypeOf<Omit<UserSelect, 'passwordHash' | 'deletedAt'>>();
     expectTypeOf<Row<UserEntity>>().not.toHaveProperty('passwordHash');
+    expectTypeOf<Row<UserEntity>>().not.toHaveProperty('deletedAt');
   });
 
   test('columns narrows the return type', async () => {
@@ -224,5 +227,21 @@ describe('service', () => {
     expectTypeOf(service.create).returns.resolves.toEqualTypeOf<Row<UserEntity>>();
     expectTypeOf(service.update).returns.resolves.toEqualTypeOf<Row<UserEntity>>();
     expectTypeOf(service.delete).returns.resolves.toEqualTypeOf<Row<UserEntity>>();
+  });
+});
+
+describe('soft delete by default', () => {
+  const notes = pgTable('notes', { id: integer().primaryKey(), body: text().notNull() });
+
+  test('a table without deletedAt must set softDelete', () => {
+    // @ts-expect-error -- soft delete is on by default, and this table has no deletedAt column
+    defineEntity(notes, { primaryKey: 'id' });
+    defineEntity(notes, { primaryKey: 'id', softDelete: false });
+  });
+
+  test('the default deletedAt column is not accepted from clients', () => {
+    const defaultEntity = defineEntity(userEntity.table, { primaryKey: 'id', create: { omit: ['id', 'createdAt'] } });
+    expectTypeOf<CreateInput<typeof defaultEntity>>().not.toHaveProperty('deletedAt');
+    expectTypeOf<UpdateInput<typeof defaultEntity>>().not.toHaveProperty('deletedAt');
   });
 });

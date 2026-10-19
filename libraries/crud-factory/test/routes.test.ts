@@ -77,6 +77,30 @@ describe('open CRUD routes', () => {
       ),
   });
 
+  test('a soft-deleted row is never returned, and no response shows deletedAt', async () => {
+    const keptId = await seedUser(app(), { email: 'kept@example.com' });
+    const deletedId = await seedUser(app(), { email: 'gone@example.com' });
+    expect((await app().inject({ method: 'DELETE', url: `/users/${deletedId}` })).statusCode).toBe(204);
+
+    // The row is still in the table, stamped.
+    expect((await storedUser(deletedId))?.deletedAt).toBeInstanceOf(Date);
+    // Every read skips it: get, list, and list with a filter that matches it.
+    expect((await app().inject({ method: 'GET', url: `/users/${deletedId}` })).statusCode).toBe(404);
+    const listed = await app().inject({ method: 'GET', url: '/users?limit=3&total=true' });
+    expect(listed.json()).toMatchObject({ items: [{ id: keptId }], total: 1 });
+    const filtered = await app().inject({ method: 'GET', url: '/users?name__ilike=Ann' });
+    expect(filtered.json().items.map((row: { id: number }) => row.id)).toEqual([keptId]);
+    // Writing to it is a 404 too.
+    expect((await app().inject({ method: 'PATCH', url: `/users/${deletedId}`, payload: { name: 'Back' } })).statusCode).toBe(404);
+    expect((await app().inject({ method: 'DELETE', url: `/users/${deletedId}` })).statusCode).toBe(404);
+
+    // `deletedAt` is never sent: not on a get, a list or a create.
+    const kept = await app().inject({ method: 'GET', url: `/users/${keptId}` });
+    expect(kept.json()).not.toHaveProperty('deletedAt');
+    expect(listed.json().items[0]).not.toHaveProperty('deletedAt');
+    expect((await app().inject({ method: 'GET', url: '/users?fields=id,deletedAt' })).statusCode).toBe(400);
+  });
+
   test('create → 201, get/list/update → 200, delete → 204 with an empty body', async () => {
     const id = await seedUser(app());
 

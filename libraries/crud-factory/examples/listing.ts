@@ -16,6 +16,7 @@ const products = pgTable('products', {
   price: integer().notNull(),
   inStock: boolean('in_stock').notNull(),
   releasedAt: timestamp('released_at', { withTimezone: true }).notNull(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }), // soft delete uses it by default
 });
 
 const client = new PGlite();
@@ -23,7 +24,7 @@ await client.exec(`
   create type category as enum ('book', 'game', 'toy');
   create table products (
     id integer primary key generated always as identity, name text not null, category category not null,
-    price integer not null, in_stock boolean not null, released_at timestamptz not null
+    price integer not null, in_stock boolean not null, released_at timestamptz not null, deleted_at timestamptz
   );
   insert into products (name, category, price, in_stock, released_at) values
     ('Atlas', 'book', 30, true, '2026-01-10T00:00:00Z'),

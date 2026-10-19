@@ -1,7 +1,7 @@
 import { getColumns, getTableName } from 'drizzle-orm';
 import type { PgColumn, PgTable } from 'drizzle-orm/pg-core';
 import { buildSchemas } from './schemas.ts';
-import type { ArrayItem, Entity, EntityConfig, FilterOperator, HiddenKey, SortSpec } from './types.ts';
+import type { ArrayItem, ColumnKey, Entity, EntityConfig, FilterOperator, HiddenKey, SortSpec } from './types.ts';
 
 const FILTER_OPERATORS: readonly FilterOperator[] = ['eq', 'in', 'ilike', 'gte', 'lte'];
 // drizzle types some non-text columns as strings too, but Postgres `ilike` only works on text types.
@@ -32,7 +32,35 @@ interface NoHiddenSorts<T extends PgTable, C extends EntityConfig<T>> {
   sortable?: readonly Exclude<ArrayItem<C['sortable']>, Hidden<T, C>>[];
 }
 
-type ConfigChecks<T extends PgTable, C extends EntityConfig<T>> = DefaultSortCheck<T, C> & NoHiddenFilters<T, C> & NoHiddenSorts<T, C>;
+/**
+ * Soft delete is on by default and uses `deletedAt`. A table without that column must say which column to use,
+ * or `softDelete: false`, so rows are never hard-deleted by accident.
+ */
+type SoftDeleteCheck<T extends PgTable, C extends EntityConfig<T>> = C extends { softDelete: unknown }
+  ? unknown
+  : 'deletedAt' extends ColumnKey<T>
+    ? unknown
+    : { softDelete: ColumnKey<T> | false };
+
+type ConfigChecks<T extends PgTable, C extends EntityConfig<T>> = DefaultSortCheck<T, C> &
+  NoHiddenFilters<T, C> &
+  NoHiddenSorts<T, C> &
+  SoftDeleteCheck<T, C>;
+
+const DEFAULT_SOFT_DELETE_COLUMN = 'deletedAt';
+
+/** The soft delete column: the one named in the config, `deletedAt` when none is named, or `undefined` with `false`. */
+export function softDeleteKey(config: EntityConfig<PgTable>): string | undefined {
+  if (config.softDelete === false) return undefined;
+  return config.softDelete ?? DEFAULT_SOFT_DELETE_COLUMN;
+}
+
+/** Columns never sent to clients or accepted from them: the hidden ones and the soft delete column. */
+export function serverOnlyKeys(config: EntityConfig<PgTable>): string[] {
+  const hidden = config.hidden ?? [];
+  const softDelete = softDeleteKey(config);
+  return softDelete === undefined ? [...hidden] : [...hidden, softDelete];
+}
 
 /** The `defaultSort` column without its leading `-`. */
 function defaultSortKey(config: EntityConfig<PgTable>): string | undefined {
@@ -54,7 +82,7 @@ function assertKnownColumns(tableName: string, columns: Record<string, PgColumn>
   check('update.omit', config.update?.omit ?? []);
   check('filterable', Object.keys(config.filterable ?? {}));
   check('sortable', config.sortable ?? []);
-  check('softDelete', config.softDelete ? [config.softDelete] : []);
+  if (typeof config.softDelete === 'string') check('softDelete', [config.softDelete]);
   check('defaultSort', sortKey === undefined ? [] : [sortKey]);
 }
 
@@ -84,8 +112,15 @@ function assertOperators(tableName: string, columns: Record<string, PgColumn>, c
 }
 
 function assertSoftDelete(tableName: string, columns: Record<string, PgColumn>, config: EntityConfig<PgTable>): void {
-  const column = config.softDelete ? columns[config.softDelete] : undefined;
-  if (!column) return;
+  const key = softDeleteKey(config);
+  if (key === undefined) return;
+  const column = columns[key];
+  if (!column) {
+    throw new Error(
+      `${tableName}: soft delete is on by default and needs a "${DEFAULT_SOFT_DELETE_COLUMN}" column. ` +
+        'Add one, name another column with softDelete, or set softDelete: false',
+    );
+  }
   if (column.notNull) throw new Error(`${tableName}: softDelete column must be nullable`);
   if (!column.getSQLType().startsWith('timestamp')) throw new Error(`${tableName}: softDelete column must be a timestamp`);
 }
@@ -121,10 +156,10 @@ export function defineEntity<T extends PgTable, const C extends EntityConfig<T>>
   const runtimeConfig: EntityConfig<PgTable> = config;
   validateConfig(name, table, runtimeConfig);
 
-  const hidden = new Set<string>(runtimeConfig.hidden ?? []);
-  const visibleKeys = Object.keys(getColumns(table)).filter((key) => !hidden.has(key));
+  const serverOnly = serverOnlyKeys(runtimeConfig);
+  const visibleKeys = Object.keys(getColumns(table)).filter((key) => !serverOnly.includes(key));
   const [first, ...rest] = visibleKeys;
   if (first === undefined) throw new Error(`${name}: every column is hidden`);
 
-  return { name, table, config, schemas: buildSchemas(table, runtimeConfig, [first, ...rest]) };
+  return { name, table, config, schemas: buildSchemas(table, runtimeConfig, [first, ...rest], serverOnly) };
 }

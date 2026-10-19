@@ -57,10 +57,12 @@ export interface EntityConfig<T extends PgTable> {
    */
   pagination?: PaginationConfig;
   /**
-   * A nullable timestamp column that turns delete into a soft delete: the row gets the current time
-   * here instead of being removed, and reads skip it. Clients can't set it.
+   * Soft delete is on by default: delete sets this nullable timestamp column to the current time instead of
+   * removing the row, and reads skip such rows. Clients can't set it. Name another column to use it instead,
+   * or set `false` to delete rows for real. Without this option the table must have a `deletedAt` column.
+   * @default 'deletedAt'
    */
-  softDelete?: ColumnKey<T>;
+  softDelete?: ColumnKey<T> | false;
 }
 
 /** Field rules for a create or update. */
@@ -114,21 +116,27 @@ type Config<E extends AnyEntity> = E['config'];
 export type ArrayItem<V> = V extends readonly (infer K extends string)[] ? K : never;
 
 export type HiddenKey<E extends AnyEntity> = ArrayItem<Config<E>['hidden']>;
+/** The soft delete column: the one named in the config, `deletedAt` when none is named, or none with `false`. */
+type SoftDeleteKey<E extends AnyEntity> = Config<E> extends { softDelete: infer K }
+  ? K extends string ? K : never
+  : 'deletedAt';
+// Hidden and soft-delete columns are never sent to clients or accepted from them; server hooks set them
+// through `Insert` and `Patch`. The soft delete column is always null on rows that reads return anyway.
+type ServerOnlyKey<E extends AnyEntity> = HiddenKey<E> | SoftDeleteKey<E>;
 type PrimaryKey<E extends AnyEntity> = Config<E>['primaryKey'];
-export type VisibleKey<E extends AnyEntity> = Exclude<ColumnKey<TableOf<E>>, HiddenKey<E>>;
+/** A column clients can see: any column except hidden and soft-delete ones. */
+export type VisibleKey<E extends AnyEntity> = Exclude<ColumnKey<TableOf<E>>, ServerOnlyKey<E>>;
 /** A sort key for code queries: any visible column, with a leading `-` for descending. */
 export type SortSpec<E extends AnyEntity> = VisibleKey<E> | `-${VisibleKey<E>}`;
 
-/** A row as returned to callers: `$inferSelect` without hidden columns. */
-export type Row<E extends AnyEntity> = Simplify<Omit<InferSelectModel<TableOf<E>>, HiddenKey<E>>>;
+/** A row as returned to callers: `$inferSelect` without hidden and soft-delete columns. */
+export type Row<E extends AnyEntity> = Simplify<Omit<InferSelectModel<TableOf<E>>, ServerOnlyKey<E>>>;
 export type PrimaryKeyValue<E extends AnyEntity> = InferSelectModel<TableOf<E>>[PrimaryKey<E>];
 
 /** The repository insert type: the full `$inferInsert`, so server code can set any column. */
 export type Insert<E extends AnyEntity> = InferInsertModel<TableOf<E>>;
 /** The repository update type: any insertable column except the primary key. */
 export type Patch<E extends AnyEntity> = Partial<Omit<Insert<E>, PrimaryKey<E>>>;
-// Clients can't send hidden or soft-delete columns; server hooks set them through `Insert` and `Patch`.
-type ServerOnlyKey<E extends AnyEntity> = HiddenKey<E> | (Config<E> extends { softDelete: infer K extends string } ? K : never);
 /** The create body clients send: `$inferInsert` without omitted, hidden and soft-delete columns. */
 export type CreateInput<E extends AnyEntity> = Simplify<
   Omit<Insert<E>, ArrayItem<NonNullable<Config<E>['create']>['omit']> | ServerOnlyKey<E>>

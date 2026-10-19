@@ -2,7 +2,7 @@
 // Users and posts CRUD on an in-memory Postgres, behind a stand-in for your auth plugin.
 import { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
-import { integer, pgTable, text } from 'drizzle-orm/pg-core';
+import { integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
 import Fastify, { type LightMyRequestResponse } from 'fastify';
 import { createRepository, createService, defineEntity, requireAuth, requireRole, UnauthorizedError } from '@diamond/crud-factory';
@@ -15,18 +15,21 @@ const users = pgTable('users', {
   name: text().notNull(),
   passwordHash: text('password_hash').notNull(),
   orgId: integer('org_id').notNull(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }), // soft delete uses it by default
 });
 const posts = pgTable('posts', {
   id: integer().primaryKey().generatedAlwaysAsIdentity(),
   orgId: integer('org_id').notNull(),
   title: text().notNull(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
 });
 
 const client = new PGlite();
 await client.exec(`
   create table users (id integer primary key generated always as identity, email text not null unique,
-    name text not null, password_hash text not null, org_id integer not null);
-  create table posts (id integer primary key generated always as identity, org_id integer not null, title text not null);
+    name text not null, password_hash text not null, org_id integer not null, deleted_at timestamptz);
+  create table posts (id integer primary key generated always as identity, org_id integer not null, title text not null,
+    deleted_at timestamptz);
 `);
 const db = drizzle({ client });
 
@@ -109,6 +112,10 @@ show(await postRoutes.list({ sort: ['title'] }, as('member'))); // only org 20's
 show(await postRoutes.update(1, { title: 'Hijacked' }, as('member'))); // 404: post 1 belongs to org 10
 // `orgId` is omitted from updates, so the types reject it. Sent raw, the route drops it: the post stays in org 20.
 show(await app.inject({ method: 'PATCH', url: '/posts/2', payload: { title: 'Moved', orgId: 10 }, ...as('member') }));
+// Soft delete is on by default: the row stays in the table with `deleted_at` set, and reads skip it.
+show(await postRoutes.delete(2, as('member')));
+show(await postRoutes.get(2, {}, as('member'))); // 404
+console.log('post 2 in the table:', (await client.query('select title, deleted_at is not null as deleted from posts where id = 2')).rows);
 
 await app.close();
 await client.close();

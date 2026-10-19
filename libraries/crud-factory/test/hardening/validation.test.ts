@@ -48,7 +48,7 @@ const kindsEntity = defineEntity(kinds, {
 const { schemas } = kindsEntity;
 
 const tokens = pgTable('v_tokens', { id: uuid().primaryKey().defaultRandom(), label: text().notNull() });
-const tokenEntity = defineEntity(tokens, { primaryKey: 'id' });
+const tokenEntity = defineEntity(tokens, { primaryKey: 'id', softDelete: false });
 
 const UUID = '123e4567-e89b-12d3-a456-426614174000';
 const ISO = '2026-03-04T05:06:07.000Z';
@@ -322,6 +322,13 @@ describe('listQuery', () => {
 
 describe('defineEntity config errors', () => {
   const base = { primaryKey: 'id' };
+
+  test('a table without a deletedAt column throws unless softDelete is set', () => {
+    expect(() => defineUntyped(tokens, base)).toThrow(
+      'v_tokens: soft delete is on by default and needs a "deletedAt" column. Add one, name another column with softDelete, or set softDelete: false',
+    );
+    expect(() => defineUntyped(tokens, { ...base, softDelete: false })).not.toThrow();
+  });
 
   test('a NOT NULL softDelete column throws', () => {
     expect(() => defineUntyped(kinds, { ...base, softDelete: 'ts' })).toThrow('softDelete column must be nullable');

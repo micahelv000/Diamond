@@ -128,13 +128,12 @@ export function buildSchemas<E extends AnyEntity>(
   table: PgTable,
   config: EntityConfig<PgTable>,
   visibleKeys: [string, ...string[]],
+  // Hidden and soft-delete columns: never sent to clients or accepted from them. Service hooks can still set them.
+  serverOnly: readonly string[],
 ): EntitySchemas<E> {
-  const hidden = config.hidden ?? [];
-  // Clients can't write hidden or soft-delete columns; service hooks still can.
-  const serverOnly = config.softDelete ? [...hidden, config.softDelete] : hidden;
   const writes = refinements(table, writeSchema);
   const reads = refinements(table, (column) => (isBigintColumn(column) ? readInt64 : undefined));
-  const read = objectWithout(bodyFactory.createSelectSchema(table, reads).shape, hidden);
+  const read = objectWithout(bodyFactory.createSelectSchema(table, reads).shape, serverOnly);
   const create = objectWithout(bodyFactory.createInsertSchema(table, writes).shape, [...(config.create?.omit ?? []), ...serverOnly]);
   const update = objectWithout(bodyFactory.createUpdateSchema(table, writes).shape, [
     ...(config.update?.omit ?? []),

@@ -199,7 +199,9 @@ describe('hook order and arguments', () => {
     await requestFor('afterDelete', '/tx');
     expect(callNames()).toEqual(['beforeDelete', 'afterDelete']);
     expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(['context', 'id']);
-    expect(calls[1]?.args).toMatchObject({ id: 1, row: { id: 1, deletedAt: expect.any(Date) } });
+    expect(calls[1]?.args).toMatchObject({ id: 1, row: { id: 1 } });
+    expect(calls[1]?.args.row).not.toHaveProperty('deletedAt');
+    expect((await storedUser())?.deletedAt).toBeInstanceOf(Date);
   });
 
   test("an after hook's return value is ignored", async () => {
