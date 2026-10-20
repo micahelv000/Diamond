@@ -13,8 +13,9 @@ function withMappedErrors<X extends object>(methods: X): X {
     if (typeof method !== 'function') continue;
     wrapped[key] = function (this: unknown, ...args: unknown[]): unknown {
       const result: unknown = method.apply(this, args);
-      if (result instanceof Promise) {
-        return result.catch((error: unknown) => {
+      // Drizzle query builders aren't promises but have `then`, so `Promise.resolve` runs them and catches their errors.
+      if (typeof result === 'object' && result !== null && 'then' in result && typeof result.then === 'function') {
+        return Promise.resolve(result).catch((error: unknown) => {
           throw mapDatabaseError(error);
         });
       }

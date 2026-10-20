@@ -382,6 +382,16 @@ describe('extend safety nets', () => {
     expect(error).toMatchObject({ statusCode: 409, constraint: 'users_email_unique' });
   });
 
+  // Returns the drizzle builder without awaiting it: the builder is a thenable, not a promise.
+  const builderUsers = createRepository(db, userEntity).extend(({ table }) => ({
+    insertBuilder: (email: string) => db.insert(table).values(newUser({ email })),
+  }));
+
+  test('errors from a returned query builder are mapped', async () => {
+    await builderUsers.insertBuilder('builder@example.com');
+    await expect(builderUsers.insertBuilder('builder@example.com')).rejects.toBeInstanceOf(ConflictError);
+  });
+
   // Called directly, not from an extend method, so the automatic wrapping can't do `scoped`'s job for it.
   const internalsOf = () => createRepository(db, userEntity).extend((internals) => ({ internals: () => internals })).internals();
 

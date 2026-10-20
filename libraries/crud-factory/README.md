@@ -370,7 +370,8 @@ outside `extend` can still use the public `repository.db`.
 - **Error mapping is automatic.** When a method you add returns a promise (any `async` method, or one
   that returns `scoped(…)`) and it rejects, the error goes through the same mapping as the base methods.
   A unique violation becomes a `ConflictError` (409), a missing foreign key a `BadRequestError` (400),
-  not a 500. A method that returns a query builder without running it is passed through unchanged.
+  not a 500. A method that returns a drizzle query builder gets the same mapping: the builder is run and
+  returned as a promise, so chain `.returning()` and the like inside the method.
 
 For `updatedAt`, use drizzle's `$onUpdate(() => new Date())` on the column: the repository's
 `update` then sets it.
