@@ -20,7 +20,7 @@ function alreadyValidated<T>(_schema: z.ZodType<T, unknown>, value: unknown): T 
 
 declare module 'fastify' {
   interface FastifyRequest {
-    /** The request's transaction while a `crudRoutes` handler runs, or `null` otherwise. */
+    /** The request's transaction while a non-GET `crudRoutes` handler runs, or `null` otherwise. */
     crudTransaction: Database | null;
   }
 }
@@ -44,6 +44,13 @@ function assertAuthorizationChoice({ method, url, config }: RouteOptions): void 
   if (config.crudOperation !== undefined && config.crudPublic === true) {
     throw new Error(`${where}: config.crudOperation and config.crudPublic can't both be set`);
   }
+}
+
+// GET and HEAD requests only read, so they skip the transaction: no BEGIN and COMMIT round trips, and a
+// list with a total can run its two queries on separate connections at the same time.
+function isReadOnlyRoute(routeOptions: RouteOptions): boolean {
+  const methods = [routeOptions.method].flat();
+  return methods.every((method) => method === 'GET' || method === 'HEAD');
 }
 
 // Wraps the handler in a transaction stored on `request.crudTransaction`.
@@ -117,7 +124,7 @@ export function crudRoutes<E extends CrudEntity<E>, TContext = undefined, S = Cr
     // Added first so it sees every route below, including the `extend` ones.
     instance.addHook('onRoute', (routeOptions) => {
       assertAuthorizationChoice(routeOptions);
-      if (transaction) wrapHandlerInTransaction(service.repository.db, routeOptions);
+      if (transaction && !isReadOnlyRoute(routeOptions)) wrapHandlerInTransaction(service.repository.db, routeOptions);
     });
     // Scoped to this plugin, so the host app needs no setup.
     instance.setValidatorCompiler(validatorCompiler);

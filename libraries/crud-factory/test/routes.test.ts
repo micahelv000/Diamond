@@ -68,9 +68,7 @@ describe('open CRUD routes', () => {
           service: userService,
           extend: (scope) => {
             // An unmapped database error: the drizzle message and the driver message both hold the value.
-            // On the request's transaction: PGlite has one connection, so `db` would wait for it forever.
-            scope.get('/boom', { config: { crudOperation: 'list' } }, (request) =>
-              (request.crudTransaction ?? db).execute(sql`select ${'top-secret-value'}::int`));
+            scope.get('/boom', { config: { crudOperation: 'list' } }, () => db.execute(sql`select ${'top-secret-value'}::int`));
           },
         }),
         { prefix: '/users' },
@@ -533,14 +531,14 @@ describe('crudPublic and tagged custom routes', () => {
     },
   });
 
-  test('a crudPublic route serves an anonymous caller with no user and no scope, in the transaction', async () => {
+  test('a crudPublic route serves an anonymous caller with no user and no scope', async () => {
     const [author] = await db.insert(users).values({ ...newUser(), passwordHash: 'h' }).returning({ id: users.id });
     const authorId = author?.id ?? 0;
     await db.insert(posts).values([{ authorId, orgId: 10, title: 'A' }, { authorId, orgId: 20, title: 'B' }]);
 
     const anonymous = await app().inject({ method: 'GET', url: '/posts/public' });
     expect(anonymous.statusCode).toBe(200);
-    expect(anonymous.json()).toEqual({ userId: null, scoped: false, inTransaction: true, visiblePosts: 2 });
+    expect(anonymous.json()).toEqual({ userId: null, scoped: false, inTransaction: false, visiblePosts: 2 });
 
     // Even a signed-in caller gets no user and no scope on a public route.
     const signedIn = await app().inject({ method: 'GET', url: '/posts/public', headers: as(bob) });
@@ -551,7 +549,7 @@ describe('crudPublic and tagged custom routes', () => {
     expect((await app().inject({ method: 'GET', url: '/posts/tagged' })).statusCode).toBe(401);
     const response = await app().inject({ method: 'GET', url: '/posts/tagged', headers: as(bob) });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ userId: bob.id, scoped: true, inTransaction: true });
+    expect(response.json()).toEqual({ userId: bob.id, scoped: true, inTransaction: false });
   });
 
   test('the auto HEAD route of a tagged GET route runs authorize too', async () => {

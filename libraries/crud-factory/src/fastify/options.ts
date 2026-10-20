@@ -11,7 +11,7 @@ import type { LifecycleHook, LifecycleHookAsyncLookup } from 'fastify/types/hook
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { AuthorizeMap, Operation } from '../auth/types.ts';
 import type { CrudService, CrudServiceMethods, ServiceContext } from '../service/create-service.ts';
-import type { AnyEntity, EntitySchemas } from '../types.ts';
+import type { AnyEntity, EntitySchemas, PrimaryKeyValue } from '../types.ts';
 import type { ContextMapper } from './authorization-hook.ts';
 
 /** An entity from `defineEntity`. Its Zod schemas drive validation and serialization. */
@@ -76,16 +76,17 @@ export interface CrudRoutesOptions<E extends CrudEntity<E>, TContext, S = CrudSe
    * `false` to deny (401 if anonymous, 403 otherwise), or a SQL condition that limits which rows match.
    * If left out, every route is open.
    */
-  authorize?: AuthorizeMap<TContext>;
+  authorize?: AuthorizeMap<TContext, PrimaryKeyValue<E>>;
   /** Which routes to register. Leave it out to register all five. */
   operations?: OperationsConfig;
   /** Fastify hooks added to every route here, including custom routes from `extend`. */
   hooks?: CrudHooksConfig;
   /**
    * Runs each request, including custom routes, in one transaction that commits on success and rolls back
-   * on error. Pass `serviceContext(request)` to every call to join it. Authorization and `hooks` run before
-   * it opens. Handlers must return their result: `reply.send()` throws inside the transaction, so the
-   * response always goes out after the commit.
+   * on error. GET and HEAD routes skip it, since they only read, so a GET route must not write. Pass
+   * `serviceContext(request)` to every call to join it. Authorization and `hooks` run before it opens.
+   * Handlers must return their result: `reply.send()` throws inside the transaction, so the response
+   * always goes out after the commit.
    * @default true
    */
   transaction?: boolean;

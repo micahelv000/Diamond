@@ -22,7 +22,7 @@ export type {
 } from './service/create-service.ts';
 export { requireAuth, requireRole } from './auth/helpers.ts';
 export type { RoleContext } from './auth/helpers.ts';
-export type { AuthorizationResult, AuthorizeMap, AuthorizeRule, Operation, RuleArgs } from './auth/types.ts';
+export type { AnyId, AuthorizationResult, AuthorizeMap, AuthorizeRule, Operation, RuleArgs } from './auth/types.ts';
 export type {
   AnyEntity,
   ColumnKey,

@@ -1,10 +1,11 @@
 import { eq } from 'drizzle-orm';
+import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
 import type { FastifyContextConfig, FastifyPluginAsync } from 'fastify';
 import { describe, expectTypeOf, test } from 'vitest';
 import { crudRoutes, type CrudRoutesOptions, type CrudRoutesPlugin } from '../src/fastify/index.ts';
 import {
-  createRepository, createService, requireAuth, requireRole, type CreateInput, type CrudService, type Database, type QueryOptions,
+  createRepository, createService, defineEntity, requireAuth, requireRole, type CreateInput, type CrudService, type Database, type QueryOptions,
   type ServiceContext,
 } from '../src/index.ts';
 import { userEntity } from './fixtures/entities.ts';
@@ -130,6 +131,20 @@ describe('crudRoutes types', () => {
     crudRoutes({ service: orgService, context: () => ({ orgId: 1 }) });
     // @ts-expect-error -- the service expects `{ orgId: number }`
     crudRoutes({ service: orgService, context: () => ({ orgId: 'one' }) });
+  });
+
+  test('a rule\'s id has the type of the entity\'s primary key', () => {
+    const tags = pgTable('tags', { id: uuid().primaryKey(), name: text().notNull() });
+    const tagService = createService(createRepository(drizzle(), defineEntity(tags, { primaryKey: 'id', softDelete: false })));
+    crudRoutes({
+      service: tagService,
+      authorize: {
+        delete: ({ id }) => {
+          expectTypeOf(id).toEqualTypeOf<string | undefined>();
+          return true;
+        },
+      },
+    });
   });
 
   test('route config accepts crudPublic as an optional boolean', () => {

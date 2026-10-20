@@ -22,7 +22,7 @@ function crudRoutes<E extends CrudEntity<E>, TContext = undefined, S = CrudServi
 interface CrudRoutesOptions<E, TContext, S> {
   service: S & CrudServiceMethods<E, NoInfer<TContext>>;
   context?: ContextMapper<TContext>;
-  authorize?: AuthorizeMap<TContext>;
+  authorize?: AuthorizeMap<TContext, PrimaryKeyValue<E>>; // rule `id`s get the primary key type
   extend?: (scope: CrudScope, tools: CrudExtendTools<E, TContext, S>) => void | Promise<void>;
   // …
 }

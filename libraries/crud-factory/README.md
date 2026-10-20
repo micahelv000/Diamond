@@ -70,7 +70,7 @@ global setup. `examples/users.ts` is a runnable version (`npx tsx examples/users
 | `operations?` | `{ only?: Operation[] }` or `{ except?: Operation[] }` to register a subset. |
 | `hooks?` | Any Fastify request hook (`onRequest`, `preValidation`, `preHandler`, `onSend`, `onResponse`, `onError`…), an async function or an array of them (no `done` callbacks). Added to the plugin scope, so they run on generated and `extend` routes (rate limits, metrics…). `preHandler` hooks run after `authorize`. |
 | `extend?` | `(scope, { service, entity, serviceContext }) => void` to add custom routes in the same scope. Each needs `config.crudOperation` or `config.crudPublic: true`, or startup fails. See [Extension points](#extension-points). |
-| `transaction?` | Default `true`: each request runs in one database transaction, rolled back if the handler throws. Handlers return their result; `reply.send()` throws. `false` lets each statement commit on its own. See [Transactions](#transactions). |
+| `transaction?` | Default `true`: each non-GET request runs in one database transaction, rolled back if the handler throws. Handlers return their result; `reply.send()` throws. GET and HEAD routes skip it. `false` lets each statement commit on its own. See [Transactions](#transactions). |
 
 The prefix is the normal `register` option: `app.register(crudRoutes({...}), { prefix: '/users' })`.
 No type arguments are needed: how `crudRoutes` infers them from the options is explained in
@@ -253,6 +253,19 @@ export const users = pgTable('users', { /* … */ }, (t) => [
   runs the page and the count in parallel, so it may hold 2 pool connections.
 - `offset` costs O(offset). For deep paging, use [cursors](#cursor-pagination).
 
+### Soft delete and unique constraints
+
+A soft-deleted row is still in the table, so a plain unique constraint still counts it: after a user
+is deleted, creating a new one with the same email is a 409. With soft delete on, make each unique
+constraint a partial unique index over the rows that aren't deleted:
+
+```ts
+uniqueIndex('users_email_unique').on(t.email).where(sql`deleted_at is null`),
+```
+
+The library has no way to list deleted rows, restore one or delete one for good (for example for a
+data-deletion request). Write those with drizzle on `service.repository.db`, outside the CRUD methods.
+
 ## Permissions
 
 The library never parses tokens. Your auth plugin (e.g. `@fastify/jwt`) sets `request.user`, and
@@ -272,6 +285,10 @@ crudRoutes({
 `'*'` always applies; an operation rule adds to it. Both must pass, and their SQL scopes are ANDed,
 so above, an admin of another org deleting a post gets a 404.
 
+**A `'*'` scope does not protect create.** Above, any signed-in caller can create a post with any
+`orgId` in the body, unless the entity omits `orgId` from the create body and a `beforeCreate` hook
+stamps it from the caller. Nothing warns you when you forget; see [below](#create-and-the-tenant-column).
+
 A rule gets `{ context, op, id?, input? }` and returns:
 
 | Result | Effect |
@@ -280,7 +297,7 @@ A rule gets `{ context, op, id?, input? }` and returns:
 | `false` | 401 if there is no context, otherwise 403 |
 | `SQL` | allowed, but every statement is ANDed with it, including update/delete by id, so another tenant's row is a 404 |
 
-A scope filters list, get, update and delete only: an insert has no rows to filter, so a `'*'` scope
+<a id="create-and-the-tenant-column"></a>A scope filters list, get, update and delete only: an insert has no rows to filter, so a `'*'` scope
 doesn't apply to create, and a `create` rule must return a boolean (it can inspect `input`). Keep a
 tenant column out of the body and stamp it from the caller:
 
@@ -462,10 +479,10 @@ extend: (scope, { service, entity, serviceContext }) => {
 
 ## Transactions
 
-`crudRoutes` runs every request in one database transaction, on all its routes: the five generated
-ones and every `extend` route. If the handler throws, everything the request wrote is rolled back and
-the error response is sent as usual; if it succeeds, the transaction commits. This is what makes a
-custom route with several writes all-or-nothing.
+`crudRoutes` runs every request except GET and HEAD in one database transaction, on all its routes:
+the generated ones and every `extend` route. If the handler throws, everything the request wrote is
+rolled back and the error response is sent as usual; if it succeeds, the transaction commits. This is
+what makes a custom route with several writes all-or-nothing.
 
 `serviceContext(request)` carries the transaction (`context.transaction`), so pass it to every call in the route:
 other entities' services, `service.repository` methods, and your own helpers. Service hooks get the
@@ -487,7 +504,10 @@ scope.post('/rotation', { config: { crudOperation: 'create' }, schema: { body } 
 - Return the result; set the status and headers with `reply.status()` and `reply.header()`. Calling
   `reply.send()` inside the handler throws, so the request fails with a 500 and rolls back: a response
   sent before the commit would report success even if the commit then failed.
-- GET routes run in a transaction too; for reads it is cheap (a `BEGIN` and a `COMMIT`).
+- GET and HEAD routes run without a transaction: they only read, so it would cost a `BEGIN` and a
+  `COMMIT` for nothing, and `?total=true` can run its page and count queries on two connections at once.
+  `context.transaction` is `undefined` there, and `reply.send()` is allowed. **A GET route must not write**:
+  its writes would not be all-or-nothing. Use POST, PATCH or DELETE for anything that changes data.
 - The transaction holds one pooled connection for the whole handler, so keep slow work (HTTP calls to
   other services) out of handlers. A query on the root `db` inside a handler runs outside the
   transaction; with a single-connection driver such as PGlite it waits for it forever.
@@ -523,11 +543,22 @@ throw new ConflictError(`Aircraft is already flying ${clash.flightNumber} then`)
 // → 409 { "code": "CONFLICT", "message": "Aircraft is already flying LY315 then" }
 ```
 
-**Breaking change:** `ConflictError` is now `new ConflictError(message?, { constraint?, cause? })`,
-with `message` defaulting to `'Resource already exists'`. It used to be
-`new ConflictError(constraint, { message?, cause? })`; replace
-`new ConflictError(undefined, { message: 'x' })` with `new ConflictError('x')`, and
-`new ConflictError(name, { cause })` with `new ConflictError(undefined, { constraint: name, cause })`.
+`ConflictError` takes `(message?, { constraint?, cause? })`, with `message` defaulting to `'Resource already exists'`.
+
+## Not in scope
+
+Each of these is a common way for a CRUD generator to become unsafe or unreadable. Write them by hand instead.
+
+- **A free-form query language.** Only the filters declared in `filterable` exist. Arbitrary field and
+  operator combinations can't be indexed, authorized or typed.
+- **Nested writes** (`POST /users` creating an org inline). Their transaction and permission rules get
+  impossible to follow; write a custom route that calls both services.
+- **`?include=` relation expansion.** It turns into a poor GraphQL. Write nested reads as custom
+  repository queries.
+- **Bulk update or delete by condition** (`DELETE /users?status=inactive`). One wrong `where` changes
+  every row; write these by hand with an explicit guard.
+- **Routes for every table automatically.** Each entity opts in with `defineEntity` and `crudRoutes`,
+  so every endpoint is one somebody reviewed.
 
 ## Why Zod and not TypeBox
 

@@ -1,22 +1,22 @@
 import { and, type SQL } from 'drizzle-orm';
-import type { AuthorizationResult, AuthorizeMap, AuthorizeRule, Operation } from './types.ts';
+import type { AnyId, AuthorizationResult, AuthorizeMap, AuthorizeRule, Operation } from './types.ts';
 
 /**
  * Runs the `'*'` rule and then the operation's rule. Every rule must pass, and their SQL conditions
  * are combined with AND. With no rules, the operation is allowed.
  */
-export async function evaluateAuthorization<TContext>(args: {
-  rules?: AuthorizeMap<TContext>;
+export async function evaluateAuthorization<TContext, TId = AnyId>(args: {
+  rules?: AuthorizeMap<TContext, TId>;
   op: Operation;
   context?: TContext;
-  id?: number;
+  id?: TId;
   input?: unknown;
 }): Promise<AuthorizationResult> {
   const { rules, op, context, id, input } = args;
   const scopes: SQL[] = [];
   const keys: readonly (Operation | '*')[] = ['*', op];
   for (const key of keys) {
-    const rule: AuthorizeRule<TContext> | undefined = rules?.[key];
+    const rule: AuthorizeRule<TContext, TId> | undefined = rules?.[key];
     if (!rule) continue;
     const decision = await rule({ context, op, id, input });
     if (decision === false) return context === undefined || context === null ? { kind: 'unauthenticated' } : { kind: 'deny' };

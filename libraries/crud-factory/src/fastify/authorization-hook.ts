@@ -1,7 +1,7 @@
 import type { SQL } from 'drizzle-orm';
 import type { FastifyRequest, preHandlerAsyncHookHandler } from 'fastify';
 import { evaluateAuthorization } from '../auth/evaluate.ts';
-import type { AuthorizeMap, Operation } from '../auth/types.ts';
+import type { AnyId, AuthorizeMap, Operation } from '../auth/types.ts';
 import { ForbiddenError, UnauthorizedError } from '../errors.ts';
 
 /** The authorization result stored on `request.crudContext`. */
@@ -16,11 +16,11 @@ export interface CrudContext {
 export type ContextMapper<TContext> = (request: FastifyRequest) => TContext | undefined | Promise<TContext | undefined>;
 
 /** Options for `createAuthorizationHook`. */
-export interface AuthorizationHookOptions<TContext> {
+export interface AuthorizationHookOptions<TContext, TId = AnyId> {
   /** Returns the current user. If `undefined`, every caller is anonymous. */
   context: ContextMapper<TContext> | undefined;
   /** The rules to check. If `undefined`, every request is allowed. */
-  authorize: AuthorizeMap<TContext> | undefined;
+  authorize: AuthorizeMap<TContext, TId> | undefined;
 }
 
 declare module 'fastify' {
@@ -39,15 +39,19 @@ declare module 'fastify' {
   }
 }
 
-function paramId(params: unknown): number | undefined {
-  return typeof params === 'object' && params !== null && 'id' in params && typeof params.id === 'number' ? params.id : undefined;
+// The params validator has already parsed `id` with the primary key's schema, so it has the key's type.
+function paramId<TId>(params: unknown): TId | undefined {
+  if (typeof params !== 'object' || params === null || !('id' in params)) return undefined;
+  const { id } = params;
+  if (typeof id === 'string' || typeof id === 'number' || typeof id === 'bigint') return id as TId;
+  return undefined;
 }
 
 /**
  * Builds the preHandler that checks `authorize` on routes with `config.crudOperation`.
  * It throws 401 or 403 when a rule blocks the request, otherwise it stores the result on `request.crudContext`.
  */
-export function createAuthorizationHook<TContext>(options: AuthorizationHookOptions<TContext>): preHandlerAsyncHookHandler {
+export function createAuthorizationHook<TContext, TId = AnyId>(options: AuthorizationHookOptions<TContext, TId>): preHandlerAsyncHookHandler {
   const { context, authorize } = options;
 
   return async function authorizeCrudOperation(request) {
@@ -59,7 +63,7 @@ export function createAuthorizationHook<TContext>(options: AuthorizationHookOpti
       rules: authorize,
       op,
       context: auth,
-      id: paramId(request.params),
+      id: paramId<TId>(request.params),
       input: op === 'create' || op === 'update' ? request.body : undefined,
     });
 

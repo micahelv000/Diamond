@@ -86,6 +86,8 @@ function userRoutes(transaction: boolean | undefined) {
         const row = await service.create(newUser('sent@x.io'), serviceContext(request));
         return reply.status(201).send({ id: row.id });
       });
+      // A GET route has no transaction, so sending the reply itself is allowed.
+      scope.get('/sent-on-get', { config: { crudOperation: 'list' } }, (_request, reply) => reply.status(202).send({ ok: true }));
     },
   };
   return crudRoutes(options);
@@ -167,6 +169,26 @@ describe('transaction: true (default)', () => {
     // The same request by an admin does open one, so the spy is watching the right database.
     expect((await app().inject({ method: 'DELETE', url: `/users/${id}`, headers: as(admin) })).statusCode).toBe(204);
     expect(transaction).toHaveBeenCalledTimes(1);
+  });
+
+  test('GET routes run without a transaction, and writes still open one', async () => {
+    const created = await app().inject({ method: 'POST', url: '/users', headers: as(admin), payload: newUser('g@x.io') });
+    const { id } = created.json<{ id: number }>();
+    const transaction = vi.spyOn(userRepo.db, 'transaction');
+
+    expect((await app().inject({ method: 'GET', url: '/users?total=true', headers: as(admin) })).statusCode).toBe(200);
+    expect((await app().inject({ method: 'GET', url: `/users/${id}`, headers: as(admin) })).statusCode).toBe(200);
+    expect((await app().inject({ method: 'HEAD', url: `/users/${id}`, headers: as(admin) })).statusCode).toBe(200);
+    expect(transaction).not.toHaveBeenCalled();
+
+    expect((await app().inject({ method: 'PATCH', url: `/users/${id}`, headers: as(admin), payload: { name: 'Gil' } })).statusCode).toBe(200);
+    expect(transaction).toHaveBeenCalledTimes(1);
+  });
+
+  test('a GET handler may send the reply itself', async () => {
+    const response = await app().inject({ method: 'GET', url: '/users/sent-on-get', headers: as(admin) });
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({ ok: true });
   });
 
   test('unknown paths still get the not-found handler', async () => {
