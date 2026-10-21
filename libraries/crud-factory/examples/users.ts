@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
 import Fastify, { type LightMyRequestResponse } from 'fastify';
-import { createRepository, createService, defineEntity, requireAuth, requireRole, UnauthorizedError } from '@diamond/crud-factory';
+import { ConflictError, createRepository, createService, defineEntity, requireAuth, requireRole, UnauthorizedError } from '@diamond/crud-factory';
 import { crudRoutes } from '@diamond/crud-factory/fastify';
 
 // 1. Tables (normally your existing drizzle schema).
@@ -59,13 +59,28 @@ interface Caller {
   roles: string[];
 }
 const userService = createService(createRepository(db, userEntity), {
-  hooks: { beforeCreate: ({ input }) => ({ ...input, passwordHash: 'set-by-invite-flow' }) },
+  hooks: { create: ({ input, run }) => run({ ...input, passwordHash: 'set-by-invite-flow' }) },
 });
 const postService = createService<typeof postEntity, Caller>(createRepository(db, postEntity), {
   hooks: {
-    beforeCreate: ({ input, context }) => {
+    create: ({ input, context, run }) => {
       if (!context.auth) throw new UnauthorizedError();
-      return { ...input, orgId: context.auth.orgId };
+      return run({ ...input, orgId: context.auth.orgId });
+    },
+  },
+});
+// Catching a database error from run(). On a taken email this hook pretends the invite worked and returns a
+// stand-in row. Without a transaction that's allowed. Inside one, as in every write route, the failed insert
+// has aborted the transaction, so the service throws instead of letting the route answer 201 for nothing.
+const inviteService = createService(createRepository(db, userEntity), {
+  hooks: {
+    create: async ({ input, run }) => {
+      try {
+        return await run({ ...input, passwordHash: 'set-by-invite-flow' });
+      } catch (error) {
+        if (!(error instanceof ConflictError)) throw error;
+        return { id: 0, email: input.email, name: input.name, orgId: input.orgId };
+      }
     },
   },
 });
@@ -90,7 +105,15 @@ const postRoutes = crudRoutes({
   context: callerOf,
   authorize: { '*': ({ context }) => (context ? eq(posts.orgId, context.orgId) : false) },
 });
+// The `onError` hook prints the error behind a 500, since the client only sees `INTERNAL_SERVER_ERROR`.
+const inviteRoutes = crudRoutes({
+  service: inviteService,
+  context: callerOf,
+  authorize: { '*': requireAuth, create: requireRole('admin') },
+  hooks: { onError: async (_request, _reply, error) => console.log('  onError:', error.message) },
+});
 await app.register(userRoutes, { prefix: '/users' });
+await app.register(inviteRoutes, { prefix: '/invites' });
 await app.register(postRoutes, { prefix: '/posts' });
 
 // 5. A few requests. `userRoutes.create`, `postRoutes.update`… check bodies at compile time, so leaving out
@@ -116,6 +139,11 @@ show(await app.inject({ method: 'PATCH', url: '/posts/2', payload: { title: 'Mov
 show(await postRoutes.delete(2, as('member')));
 show(await postRoutes.get(2, {}, as('member'))); // 404
 console.log('post 2 in the table:', (await client.query('select title, deleted_at is not null as deleted from posts where id = 2')).rows);
+
+// The invite hook that catches the duplicate-email error. Called directly, without a transaction, the catch works.
+console.log('invite without a transaction →', await inviteService.create({ email: 'ann@x.io', name: 'Ann', orgId: 10 }, {}));
+// Through the route, in its transaction, the service throws: a 500, with the reason printed by `onError`.
+show(await inviteRoutes.create({ email: 'ann@x.io', name: 'Ann', orgId: 10 }, as('admin')));
 
 await app.close();
 await client.close();

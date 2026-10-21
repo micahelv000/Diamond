@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, test } from 'vitest';
 import { z } from 'zod';
 import { crudRoutes, type CrudRoutesOptions } from '../../src/fastify/index.ts';
 import {
-  ConflictError, createRepository, createService, requireAuth, type Database, type ServiceHooks,
+  ConflictError, createRepository, createService, requireAuth, type Database,
 } from '../../src/index.ts';
 import { postEntity, userEntity } from '../fixtures/entities.ts';
 import { posts, users } from '../fixtures/schema.ts';
@@ -13,15 +13,16 @@ import { as, useServer, type TestUser } from '../helpers/server.ts';
 
 const { db } = useTestDb();
 
-type HookName = keyof ServiceHooks<typeof userEntity, TestUser>;
+/** The point in a hook where it records a call: before or after its `run()`. */
+type HookName = 'beforeCreate' | 'afterCreate' | 'beforeUpdate' | 'afterUpdate' | 'beforeDelete' | 'afterDelete';
 
 const postRepo = createRepository(db, postEntity);
 const userRepo = createRepository(db, userEntity);
-/** The hook that should throw after writing its audit row, if any. */
+/** The point that should throw after writing its audit row, if any. */
 let failAt: HookName | undefined;
-/** Every hook call, in order, with its arguments. */
+/** Every recorded point, in order, with the hook's arguments (and the saved row, after `run()`). */
 const calls: { hook: HookName; args: Record<string, unknown> }[] = [];
-let afterUpdateMutatesRow = false;
+let updateReturnsChangedRow = false;
 
 /** Records the call, writes an audit post (a second entity) in the hook's transaction, then maybe throws. */
 async function hookStep(hook: HookName, args: { context: { transaction?: Database } } & Record<string, unknown>): Promise<void> {
@@ -32,23 +33,25 @@ async function hookStep(hook: HookName, args: { context: { transaction?: Databas
 
 const userService = createService<typeof userEntity, TestUser>(userRepo, {
   hooks: {
-    beforeCreate: async (args) => {
-      await hookStep('beforeCreate', args);
-      return { ...args.input, passwordHash: 'h' };
+    create: async (args) => {
+      await hookStep('beforeCreate', { ...args });
+      const row = await args.run({ ...args.input, passwordHash: 'h' });
+      await hookStep('afterCreate', { ...args, row });
+      return row;
     },
-    afterCreate: async (args) => hookStep('afterCreate', args),
-    beforeUpdate: async (args) => {
-      await hookStep('beforeUpdate', args);
-      return args.patch;
+    update: async (args) => {
+      await hookStep('beforeUpdate', { ...args });
+      const row = await args.run();
+      await hookStep('afterUpdate', { ...args, row });
+      if (updateReturnsChangedRow) return { ...row, name: 'Changed in hook' };
+      return row;
     },
-    afterUpdate: async (args) => {
-      await hookStep('afterUpdate', args);
-      if (afterUpdateMutatesRow) Object.assign(args.row, { name: 'Mutated in hook' });
-      // Typed as returning nothing; a value is smuggled in to prove it is dropped.
-      return Reflect.apply(() => ({ id: -1, name: 'Hijacked' }), undefined, []);
+    delete: async (args) => {
+      await hookStep('beforeDelete', { ...args });
+      const row = await args.run();
+      await hookStep('afterDelete', { ...args, row });
+      return row;
     },
-    beforeDelete: async (args) => hookStep('beforeDelete', args),
-    afterDelete: async (args) => hookStep('afterDelete', args),
   },
 });
 
@@ -127,7 +130,7 @@ const callNames = () => calls.map((call) => call.hook);
 
 beforeEach(async () => {
   failAt = undefined;
-  afterUpdateMutatesRow = false;
+  updateReturnsChangedRow = false;
   calls.length = 0;
   await db.execute(sql`truncate posts, users restart identity cascade`);
   await db.execute(sql`insert into users (email, name, password_hash, org_id) values ('seed@x.io', 'Seed', 'h', 10)`);
@@ -193,7 +196,7 @@ describe('aborted transactions (25P02)', () => {
 });
 
 describe('hook order and arguments', () => {
-  test('create: beforeCreate gets the client input, afterCreate the saved row without hidden columns', async () => {
+  test('create: the hook gets the client input, and run() returns the saved row without hidden columns', async () => {
     const response = await requestFor('afterCreate', '/with-transaction');
     expect(response.statusCode).toBe(201);
     expect(callNames()).toEqual(['beforeCreate', 'afterCreate']);
@@ -203,30 +206,25 @@ describe('hook order and arguments', () => {
     expect(calls[1]?.args.row).not.toHaveProperty('passwordHash');
   });
 
-  test('update: both hooks get the parsed id and the client patch', async () => {
+  test('update: the hook gets the parsed id and the client patch', async () => {
     await requestFor('afterUpdate', '/with-transaction');
     expect(callNames()).toEqual(['beforeUpdate', 'afterUpdate']);
     expect(calls[0]?.args).toMatchObject({ id: 1, patch: { name: 'Renamed' } });
     expect(calls[1]?.args).toMatchObject({ id: 1, patch: { name: 'Renamed' }, row: { name: 'Renamed' } });
   });
 
-  test('delete: beforeDelete gets only the id, afterDelete the soft-deleted row', async () => {
+  test('delete: the hook gets the id but no row, and run() returns the soft-deleted row', async () => {
     await requestFor('afterDelete', '/with-transaction');
     expect(callNames()).toEqual(['beforeDelete', 'afterDelete']);
-    expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(['context', 'id', 'state']);
+    expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(['context', 'id', 'repository', 'run']);
     expect(calls[1]?.args).toMatchObject({ id: 1, row: { id: 1 } });
     expect(calls[1]?.args.row).not.toHaveProperty('deletedAt');
     expect((await storedUser())?.deletedAt).toBeInstanceOf(Date);
   });
 
-  test("an after hook's return value is ignored", async () => {
-    const response = await requestFor('afterUpdate', '/with-transaction');
-    expect(response.json()).toMatchObject({ id: 1, name: 'Renamed' });
-  });
-
-  test('an after hook that mutates row changes the response but not the database', async () => {
-    afterUpdateMutatesRow = true;
-    expect((await requestFor('afterUpdate', '/with-transaction')).json()).toMatchObject({ name: 'Mutated in hook' });
+  test('a hook that returns a changed row changes the response but not the database', async () => {
+    updateReturnsChangedRow = true;
+    expect((await requestFor('afterUpdate', '/with-transaction')).json()).toMatchObject({ name: 'Changed in hook' });
     expect(await storedUser()).toMatchObject({ name: 'Renamed' });
   });
 

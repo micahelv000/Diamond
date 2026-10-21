@@ -7,6 +7,8 @@ import {
   type CrudRepository,
   type CrudService,
   type Filter,
+  type Insert,
+  type Patch,
   type Row,
   type ServiceContext,
   type SortSpec,
@@ -178,83 +180,80 @@ describe('service', () => {
   test('context.auth is typed and create takes the API input', () => {
     const service = createService<UserEntity, { orgId: number }>(repository, {
       hooks: {
-        beforeCreate: ({ input, context }) => {
+        create: ({ input, context, run }) => {
           expectTypeOf(context.auth).toEqualTypeOf<{ orgId: number } | undefined>();
-          // Hidden columns aren't in the API input, so the hook supplies them.
-          return { ...input, passwordHash: 'hashed', orgId: context.auth?.orgId ?? 0 };
+          // Hidden columns aren't in the API input, so the hook passes them to run().
+          return run({ ...input, passwordHash: 'hashed', orgId: context.auth?.orgId ?? 0 });
         },
       },
     });
     expectTypeOf(service.create).parameter(0).toEqualTypeOf<CreateInput<UserEntity>>();
   });
-  test('after and delete hooks get the saved row, the client values and the typed context', () => {
+
+  test('each hook gets the client values, the typed context and a run() that returns the saved row', () => {
     createService<UserEntity, { orgId: number }>(repository, {
       hooks: {
-        afterCreate: ({ row, input, context }) => {
-          expectTypeOf(row).toEqualTypeOf<Row<UserEntity>>();
+        create: async ({ input, context, run }) => {
           expectTypeOf(input).toEqualTypeOf<CreateInput<UserEntity>>();
           expectTypeOf(context.auth).toEqualTypeOf<{ orgId: number } | undefined>();
+          expectTypeOf(run).parameter(0).toEqualTypeOf<Insert<UserEntity> | undefined>();
+          expectTypeOf(run).returns.resolves.toEqualTypeOf<Row<UserEntity>>();
+          return run();
         },
-        afterUpdate: ({ id, row, patch }) => {
+        update: async ({ id, patch, run }) => {
           expectTypeOf(id).toBeNumber();
-          expectTypeOf(row).toEqualTypeOf<Row<UserEntity>>();
           expectTypeOf(patch).toEqualTypeOf<UpdateInput<UserEntity>>();
+          expectTypeOf(run).parameter(0).toEqualTypeOf<Patch<UserEntity> | undefined>();
+          return run();
         },
-        beforeDelete: async ({ id, context }) => {
+        delete: async ({ id, context, run }) => {
           expectTypeOf(id).toBeNumber();
           expectTypeOf(context).toEqualTypeOf<ServiceContext<{ orgId: number }>>();
-        },
-        afterDelete: ({ row }) => expectTypeOf(row).toEqualTypeOf<Row<UserEntity>>(),
-      },
-    });
-  });
-
-  test('after hooks may return a value, which the service ignores', () => {
-    const service = createService(repository, {
-      hooks: { afterCreate: async ({ row }) => row.name, afterUpdate: () => 1, afterDelete: ({ row }) => row },
-    });
-    expectTypeOf(service.create).returns.resolves.toEqualTypeOf<Row<UserEntity>>();
-    expectTypeOf(service.update).returns.resolves.toEqualTypeOf<Row<UserEntity>>();
-    expectTypeOf(service.delete).returns.resolves.toEqualTypeOf<Row<UserEntity>>();
-  });
-});
-
-describe('hook state', () => {
-  test('the state option sets the type of state in every hook', () => {
-    createService(repository, {
-      state: () => ({ previousStatus: undefined as string | undefined }),
-      hooks: {
-        beforeUpdate: ({ patch, state }) => {
-          expectTypeOf(state).toEqualTypeOf<{ previousStatus: string | undefined }>();
-          state.previousStatus = 'active';
-          return patch;
-        },
-        afterUpdate: ({ state }) => expectTypeOf(state.previousStatus).toEqualTypeOf<string | undefined>(),
-        afterDelete: ({ state }) => {
-          // @ts-expect-error -- the state type has no such key
-          state.somethingElse = 1;
+          expectTypeOf(run).parameters.toEqualTypeOf<[]>();
+          return run();
         },
       },
     });
   });
 
-  test('with explicit type arguments, the state type comes fourth', () => {
-    createService<UserEntity, { orgId: number }, CrudRepository<UserEntity>, { count: number }>(repository, {
-      state: () => ({ count: 0 }),
-      hooks: { beforeDelete: ({ state }) => expectTypeOf(state.count).toBeNumber() },
+  test('hooks get the repository with its custom methods typed', () => {
+    const extended = repository.extend(() => ({ countActive: async () => 1 }));
+    createService(extended, {
+      hooks: {
+        delete: async ({ repository, run }) => {
+          expectTypeOf(repository).toEqualTypeOf<typeof extended>();
+          expectTypeOf(repository.countActive).returns.resolves.toBeNumber();
+          return run();
+        },
+      },
     });
-    createService<UserEntity, { orgId: number }, CrudRepository<UserEntity>, { count: number }>(repository, {
-      // @ts-expect-error -- the state option must return the declared state type
-      state: () => ({ count: 'zero' }),
+    createService<UserEntity, { orgId: number }>(repository, {
+      hooks: {
+        delete: async ({ repository, run }) => {
+          expectTypeOf(repository).toEqualTypeOf<CrudRepository<UserEntity>>();
+          return run();
+        },
+      },
     });
   });
 
-  test('without a state option, state is empty and nothing can be written to it', () => {
+  test('a hook must return the row, so forgetting to return run() is a compile error', () => {
     createService(repository, {
       hooks: {
-        beforeDelete: ({ state }) => {
-          // @ts-expect-error -- no state option, so state has no keys
-          state.note = 'x';
+        // @ts-expect-error -- the hook returns nothing
+        update: async ({ run }) => {
+          await run();
+        },
+      },
+    });
+  });
+
+  test('run() rejects a row that is missing a required hidden column', () => {
+    createService(repository, {
+      hooks: {
+        create: ({ input, run }) => {
+          // @ts-expect-error -- passwordHash is required in the insert
+          return run({ ...input, orgId: 1 });
         },
       },
     });

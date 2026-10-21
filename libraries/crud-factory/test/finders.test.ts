@@ -10,7 +10,7 @@ import { as, useServer, type TestUser } from './helpers/server.ts';
 const { db } = useTestDb();
 const repo = createRepository(db, userEntity);
 const service = createService<typeof userEntity, TestUser>(repo, {
-  hooks: { beforeCreate: ({ input }) => ({ ...input, passwordHash: 'hashed' }) },
+  hooks: { create: ({ input, run }) => run({ ...input, passwordHash: 'hashed' }) },
 });
 
 // A database that fails on any use, to prove a call rejected before it queried.

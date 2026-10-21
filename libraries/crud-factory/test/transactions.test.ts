@@ -13,12 +13,12 @@ const userRepo = createRepository(db, userEntity);
 const userService = createService<typeof userEntity, TestUser>(userRepo, {
   hooks: {
     // Writes a row of its own, then fails for one name: the hook's write must be rolled back too.
-    beforeCreate: async ({ input, context }) => {
+    create: async ({ input, context, run }) => {
       if (input.name === 'Hook fails') {
         await userRepo.create({ ...input, email: `audit-${input.email}`, passwordHash: 'h' }, { transaction: context.transaction });
         throw new ConflictError('Rejected after a write');
       }
-      return { ...input, passwordHash: 'secret-hash' };
+      return run({ ...input, passwordHash: 'secret-hash' });
     },
   },
 });
@@ -33,7 +33,7 @@ const customUserRepo = userRepo.extend(({ scoped, table }) => ({
   },
 }));
 const postService = createService<typeof postEntity, TestUser>(createRepository(db, postEntity), {
-  hooks: { beforeCreate: ({ input }) => ({ ...input, orgId: 10 }) },
+  hooks: { create: ({ input, run }) => run({ ...input, orgId: 10 }) },
 });
 
 const admin: TestUser = { id: 1, orgId: 10, roles: ['admin'] };
@@ -234,16 +234,16 @@ describe('transaction: false', () => {
   });
 });
 
-// After hooks that fail for one name, to show that a failing after hook undoes the write it follows.
-const failAfter = (name: string) => {
-  if (name === 'After fails') throw new ConflictError('After hook failed');
+// Hooks that fail after run() for one name, to show that failing after the write undoes it.
+const failAfter = <T extends { name: string }>(row: T): T => {
+  if (row.name === 'After fails') throw new ConflictError('After hook failed');
+  return row;
 };
 const afterHookService = createService<typeof userEntity, TestUser>(userRepo, {
   hooks: {
-    beforeCreate: ({ input }) => ({ ...input, passwordHash: 'h' }),
-    afterCreate: ({ row }) => failAfter(row.name),
-    afterUpdate: ({ row }) => failAfter(row.name),
-    afterDelete: ({ row }) => failAfter(row.name),
+    create: async ({ input, run }) => failAfter(await run({ ...input, passwordHash: 'h' })),
+    update: async ({ run }) => failAfter(await run()),
+    delete: async ({ run }) => failAfter(await run()),
   },
 });
 const afterHookRoutes = (transaction: boolean) =>
@@ -252,23 +252,23 @@ const insertUser = async (name: string) =>
   (await db.insert(users).values({ ...newUser('u@x.io', name), passwordHash: 'h' }).returning({ id: users.id }))[0]?.id;
 const storedUser = async () => (await db.select({ name: users.name, deletedAt: users.deletedAt }).from(users))[0];
 
-describe('after hooks with transaction: true', () => {
+describe('hooks that throw after run() with transaction: true', () => {
   const app = useServer({ register: (app) => app.register(afterHookRoutes(true), { prefix: '/users' }) });
 
-  test('afterCreate that throws leaves no row', async () => {
+  test('create that throws after run() leaves no row', async () => {
     const response = await app().inject({ method: 'POST', url: '/users', headers: as(admin), payload: newUser('a@x.io', 'After fails') });
     expect(response.statusCode).toBe(409);
     expect(await countUsers()).toBe(0);
   });
 
-  test('afterUpdate that throws leaves the old values', async () => {
+  test('update that throws after run() leaves the old values', async () => {
     const id = await insertUser('Ann');
     const response = await app().inject({ method: 'PATCH', url: `/users/${id}`, headers: as(admin), payload: { name: 'After fails' } });
     expect(response.statusCode).toBe(409);
     expect(await storedUser()).toEqual({ name: 'Ann', deletedAt: null });
   });
 
-  test('afterDelete that throws leaves the row in place', async () => {
+  test('delete that throws after run() leaves the row in place', async () => {
     const id = await insertUser('After fails');
     const response = await app().inject({ method: 'DELETE', url: `/users/${id}`, headers: as(admin) });
     expect(response.statusCode).toBe(409);
@@ -276,10 +276,10 @@ describe('after hooks with transaction: true', () => {
   });
 });
 
-describe('after hooks with transaction: false', () => {
+describe('hooks that throw after run() with transaction: false', () => {
   const app = useServer({ register: (app) => app.register(afterHookRoutes(false), { prefix: '/users' }) });
 
-  test('the write survives an afterCreate that throws', async () => {
+  test('the write survives a create hook that throws after run()', async () => {
     const response = await app().inject({ method: 'POST', url: '/users', headers: as(admin), payload: newUser('a@x.io', 'After fails') });
     expect(response.statusCode).toBe(409);
     expect(await countUsers()).toBe(1);

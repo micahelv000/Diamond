@@ -12,13 +12,16 @@ export { createRepository } from './repository/create-repository.ts';
 export type { CrudRepository, CrudRepositoryBase, CrudRepositoryMethods, RepositoryInternals, ScopedTools } from './repository/types.ts';
 export { createService } from './service/create-service.ts';
 export type {
+  CreateHookArgs,
   CrudService,
   CrudServiceBase,
   CrudServiceMethods,
+  DeleteHookArgs,
   ServiceContext,
   ServiceFinders,
   ServiceHooks,
   ServiceOptions,
+  UpdateHookArgs,
 } from './service/create-service.ts';
 export { requireAuth, requireRole } from './auth/helpers.ts';
 export type { RoleContext } from './auth/helpers.ts';

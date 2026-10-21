@@ -1,4 +1,5 @@
 import type { SQL } from 'drizzle-orm';
+import { findPostgresError } from '../errors.ts';
 import { withExtend } from '../extend.ts';
 import { buildFinders, typedFinders, type FinderMethods } from '../repository/finders.ts';
 import type { CrudRepository } from '../repository/types.ts';
@@ -38,52 +39,123 @@ export interface ServiceContext<TAuth = unknown> {
 }
 
 /**
- * Functions that run around every create, update and delete made through the service, including custom
- * methods that call `base`. Calls made directly on `service.repository` skip them. Each may be async.
- * When `context.transaction` is set, as in routes by default, a hook that throws rolls back the write. Work done outside
- * the database, such as sending emails or events, can't be rolled back.
- * Every hook also gets `state`: a new object for each call, from the `state` option. The before hook and the
- * after hook of one call get the same object, so a value worked out before the write can be read after it.
+ * What every write hook receives. `run` does the write itself; code before it runs before the write, code
+ * after it runs after, and plain local variables carry values from one side to the other.
  */
-export interface ServiceHooks<E extends AnyEntity, TAuth, TState = EmptyState> {
+interface WriteHookArgs<TAuth, TRun, R> {
+  context: ServiceContext<TAuth>;
   /**
-   * Runs before every create. Receives the client's input and returns the full row to insert, so it can
-   * set columns that clients may not send. Throw to reject the request.
+   * The service's repository, with its custom methods. Its calls skip the service's hooks, and join the
+   * caller's transaction and scope only when you pass `context.transaction` and `context.scope`.
    */
-  beforeCreate?(args: { input: CreateInput<E>; context: ServiceContext<TAuth>; state: TState }): Insert<E> | Promise<Insert<E>>;
-  /** Runs after every create succeeds, with the saved row and the client's input. Its return value is ignored. */
-  afterCreate?(args: { row: Row<E>; input: CreateInput<E>; context: ServiceContext<TAuth>; state: TState }): void;
-  /** Runs before every update. Receives the id and the client's changes, and returns the changes to save. Throw to reject the request. */
-  beforeUpdate?(args: {
-    id: PrimaryKeyValue<E>;
-    patch: UpdateInput<E>;
-    context: ServiceContext<TAuth>;
-    state: TState;
-  }): Patch<E> | Promise<Patch<E>>;
-  /** Runs after every update succeeds, with the saved row and the client's changes. Its return value is ignored. */
-  afterUpdate?(args: { id: PrimaryKeyValue<E>; row: Row<E>; patch: UpdateInput<E>; context: ServiceContext<TAuth>; state: TState }): void;
+  repository: R;
   /**
-   * Runs before every delete. Throw to block it. It receives only the id; to check the row, read it
-   * with the repository, passing `context.transaction` and `context.scope`.
+   * Writes to the database and returns the saved row. Call it exactly once: calling it twice, or returning
+   * without calling it, throws. To reject the write, throw instead.
+   *
+   * **Don't catch its database errors inside a transaction** (every route has one by default). A failed
+   * statement aborts the whole transaction: Postgres refuses every later query in it and rolls back every
+   * write at the end, so the caller would get a success response for data that was never saved. If the hook
+   * catches such an error and still returns, the service throws instead. Outside a transaction, catching
+   * is safe.
    */
-  beforeDelete?(args: { id: PrimaryKeyValue<E>; context: ServiceContext<TAuth>; state: TState }): void;
-  /** Runs after every delete succeeds, soft or hard, with the deleted row. Its return value is ignored. */
-  afterDelete?(args: { id: PrimaryKeyValue<E>; row: Row<E>; context: ServiceContext<TAuth>; state: TState }): void;
+  run: TRun;
 }
 
-/** The hooks' `state` when the service has no `state` option: an object with nothing in it. */
-type EmptyState = Record<string, never>;
+/** What the `create` hook receives. `run()` inserts `input` as-is; `run(insert)` inserts that row instead. */
+export interface CreateHookArgs<E extends AnyEntity, TAuth, R extends CrudRepository<E> = CrudRepository<E>>
+  extends WriteHookArgs<TAuth, (insert?: Insert<E>) => Promise<Row<E>>, R> {
+  /** The client's input. Hidden columns aren't in it, so pass the full row to `run` to set them. */
+  input: CreateInput<E>;
+}
+
+/** What the `update` hook receives. `run()` saves `patch` as-is; `run(changes)` saves those changes instead. */
+export interface UpdateHookArgs<E extends AnyEntity, TAuth, R extends CrudRepository<E> = CrudRepository<E>>
+  extends WriteHookArgs<TAuth, (changes?: Patch<E>) => Promise<Row<E>>, R> {
+  id: PrimaryKeyValue<E>;
+  /** The client's changes. */
+  patch: UpdateInput<E>;
+}
+
+/**
+ * What the `delete` hook receives. `run()` deletes the row, soft or hard, and returns it. To check the row
+ * first, read it with `repository`, passing `context.transaction` and `context.scope`.
+ */
+export interface DeleteHookArgs<E extends AnyEntity, TAuth, R extends CrudRepository<E> = CrudRepository<E>>
+  extends WriteHookArgs<TAuth, () => Promise<Row<E>>, R> {
+  id: PrimaryKeyValue<E>;
+}
+
+/**
+ * One function per write, wrapped around it. Each runs on every create, update or delete made through the
+ * service, including custom methods that call `base`; calls made directly on `service.repository` skip them.
+ * Without a hook, the service just runs the write.
+ * A hook calls `run` to write, and returns the row the caller gets, usually `run`'s.
+ * When `context.transaction` is set, as in routes by default, a hook that throws rolls back the write. Work
+ * done outside the database, such as sending emails or events, can't be rolled back.
+ * @example
+ * create: async ({ input, context, run }) => {
+ *   const row = await run({ ...input, orgId: context.auth.orgId });
+ *   await notify(row);
+ *   return row;
+ * }
+ */
+export interface ServiceHooks<E extends AnyEntity, TAuth, R extends CrudRepository<E> = CrudRepository<E>> {
+  create?(args: CreateHookArgs<E, TAuth, R>): Promise<Row<E>>;
+  update?(args: UpdateHookArgs<E, TAuth, R>): Promise<Row<E>>;
+  delete?(args: DeleteHookArgs<E, TAuth, R>): Promise<Row<E>>;
+}
 
 /** Options for `createService`. */
-export interface ServiceOptions<E extends AnyEntity, TAuth, TState = EmptyState> {
-  /**
-   * Creates the `state` object that the hooks of one create, update or delete share. It runs once per call,
-   * so values never leak from one call to the next. Its return type is the type of `state` in every hook.
-   * @example state: () => ({ previousStatus: undefined as string | undefined })
-   */
-  state?: () => TState;
-  /** Functions that run before and after each create, update and delete. */
-  hooks?: ServiceHooks<E, TAuth, TState>;
+export interface ServiceOptions<E extends AnyEntity, TAuth, R extends CrudRepository<E> = CrudRepository<E>> {
+  /** Functions wrapped around each create, update and delete. */
+  hooks?: ServiceHooks<E, TAuth, R>;
+}
+
+type WriteOperation = 'create' | 'update' | 'delete';
+
+/**
+ * Wraps a write in the `run` a hook receives. `run` throws if it is called a second time, and `check`,
+ * called after the hook returns, throws if the hook never called `run`, or if it swallowed a database
+ * error inside a transaction.
+ */
+function guardWrite<TArgs extends unknown[], TRow>(
+  operation: WriteOperation,
+  inTransaction: boolean,
+  write: (...args: TArgs) => Promise<TRow>,
+) {
+  let called = false;
+  let databaseError: { error: unknown } | undefined;
+
+  const run = async (...args: TArgs): Promise<TRow> => {
+    if (called) throw new Error(`The service's ${operation} hook called run() more than once. Call it exactly once.`);
+    called = true;
+    try {
+      return await write(...args);
+    } catch (error) {
+      // Only an error Postgres raised aborts the transaction; a `NotFoundError` for a missing row doesn't.
+      if (findPostgresError(error)) databaseError = { error };
+      throw error;
+    }
+  };
+
+  const check = (): void => {
+    if (!called) {
+      throw new Error(
+        `The service's ${operation} hook returned without calling run(), so nothing was written. ` +
+          `Call run() to write, or throw to reject the ${operation}.`,
+      );
+    }
+    if (databaseError && inTransaction) {
+      throw new Error(
+        `The service's ${operation} hook caught a database error from run(). ` +
+          `The error aborted the transaction, so all of its writes will roll back and the call cannot succeed. Rethrow the error.`,
+        { cause: databaseError.error },
+      );
+    }
+  };
+
+  return { run, check };
 }
 
 // How the finder types work is explained in docs/finder-types.md.
@@ -169,31 +241,16 @@ export type CrudService<
 
 /**
  * Wraps a repository with hooks.
- * If you pass type arguments yourself, pass the repository's type third to keep its custom methods typed,
- * and the hooks' state type fourth when you use the `state` option.
+ * If you pass type arguments yourself, pass the repository's type third to keep its custom methods typed.
  */
-export function createService<
-  E extends AnyEntity,
-  TAuth = unknown,
-  R extends CrudRepository<E> = CrudRepository<E>,
-  TState = EmptyState,
->(
+export function createService<E extends AnyEntity, TAuth = unknown, R extends CrudRepository<E> = CrudRepository<E>>(
   // The intersection lets TypeScript infer `E` from `CrudRepository<E>` and the full repository type from `R`.
   repository: R & CrudRepository<E>,
-  options: ServiceOptions<E, TAuth, TState> = {},
+  options: ServiceOptions<E, TAuth, R> = {},
 ): CrudService<E, TAuth, R> {
   const { hooks = {} } = options;
-  // Without a `state` option, `TState` is `EmptyState`, so an empty object is the right value.
-  const newState = options.state ?? ((): TState => ({}) as TState);
 
   const queryOptions = (context: ServiceContext<TAuth>): QueryOptions => ({ transaction: context.transaction, scope: context.scope });
-  // Without a hook the input is inserted as-is, so omitted columns must have database defaults.
-  // The casts are needed because TypeScript can't relate the two `Omit` types over a generic table.
-  const toInsert = async (input: CreateInput<E>, context: ServiceContext<TAuth>, state: TState): Promise<Insert<E>> =>
-    hooks.beforeCreate ? hooks.beforeCreate({ input, context, state }) : (input as Insert<E>);
-  // `UpdateInput` is a subset of `Patch`, so this cast is safe.
-  const toPatch = async (id: PrimaryKeyValue<E>, patch: UpdateInput<E>, context: ServiceContext<TAuth>, state: TState): Promise<Patch<E>> =>
-    hooks.beforeUpdate ? hooks.beforeUpdate({ id, patch, context, state }) : (patch as Patch<E>);
 
   const findMany: CrudServiceMethods<E, TAuth, R>['findMany'] = (listOptions, context) =>
     repository.findMany({ ...listOptions, ...queryOptions(context) });
@@ -217,22 +274,30 @@ export function createService<
     ...typedFinders<ServiceFinders<E, TAuth>>(finders),
     findById: (id, findOptions, context) => repository.findById(id, { ...findOptions, ...queryOptions(context) }),
     create: async (input, context) => {
-      const state = newState();
-      const row = await repository.create(await toInsert(input, context, state), queryOptions(context));
-      await hooks.afterCreate?.({ row, input, context, state });
+      // `run()` inserts the input as-is, so omitted columns must have database defaults.
+      // The cast is needed because TypeScript can't relate the two `Omit` types over a generic table.
+      const write = (insert: Insert<E> = input as Insert<E>) => repository.create(insert, queryOptions(context));
+      if (!hooks.create) return write();
+      const { run, check } = guardWrite('create', context.transaction !== undefined, write);
+      const row = await hooks.create({ input, context, repository, run });
+      check();
       return row;
     },
     update: async (id, patch, context) => {
-      const state = newState();
-      const row = await repository.update(id, await toPatch(id, patch, context, state), queryOptions(context));
-      await hooks.afterUpdate?.({ id, row, patch, context, state });
+      // `UpdateInput` is a subset of `Patch`, so this cast is safe.
+      const write = (changes: Patch<E> = patch as Patch<E>) => repository.update(id, changes, queryOptions(context));
+      if (!hooks.update) return write();
+      const { run, check } = guardWrite('update', context.transaction !== undefined, write);
+      const row = await hooks.update({ id, patch, context, repository, run });
+      check();
       return row;
     },
     delete: async (id, context) => {
-      const state = newState();
-      await hooks.beforeDelete?.({ id, context, state });
-      const row = await repository.delete(id, queryOptions(context));
-      await hooks.afterDelete?.({ id, row, context, state });
+      const write = () => repository.delete(id, queryOptions(context));
+      if (!hooks.delete) return write();
+      const { run, check } = guardWrite('delete', context.transaction !== undefined, write);
+      const row = await hooks.delete({ id, context, repository, run });
+      check();
       return row;
     },
   };

@@ -13,7 +13,7 @@ const { db } = useTestDb();
 
 // Clients can't send hidden columns, so the hook sets the one the table requires.
 const userService = createService(createRepository(db, userEntity), {
-  hooks: { beforeCreate: ({ input }) => ({ ...input, passwordHash: 'secret-hash' }) },
+  hooks: { create: ({ input, run }) => run({ ...input, passwordHash: 'secret-hash' }) },
 });
 const alice: TestUser = { id: 1, orgId: 10, roles: ['admin'] };
 

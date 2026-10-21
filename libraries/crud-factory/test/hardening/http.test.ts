@@ -14,13 +14,13 @@ const { db } = useTestDb();
 
 const HASH = 'server-side-hash-value';
 const userService = createService(createRepository(db, userEntity), {
-  hooks: { beforeCreate: ({ input }) => ({ ...input, passwordHash: HASH }) },
+  hooks: { create: ({ input, run }) => run({ ...input, passwordHash: HASH }) },
 });
 const postService = createService<typeof postEntity, TestUser>(createRepository(db, postEntity), {
   hooks: {
-    beforeCreate: ({ input, context }) => {
+    create: ({ input, context, run }) => {
       if (!context.auth) throw new UnauthorizedError();
-      return { ...input, orgId: context.auth.orgId };
+      return run({ ...input, orgId: context.auth.orgId });
     },
   },
 });

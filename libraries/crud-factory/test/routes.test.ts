@@ -15,14 +15,14 @@ const { db } = useTestDb();
 
 // Clients can't send hidden columns, so the hook sets the one the table requires.
 const userService = createService(createRepository(db, userEntity), {
-  hooks: { beforeCreate: ({ input }) => ({ ...input, passwordHash: 'secret-hash' }) },
+  hooks: { create: ({ input, run }) => run({ ...input, passwordHash: 'secret-hash' }) },
 });
 // The tenant column is stamped from the caller, never taken from the body.
 const postService = createService<typeof postEntity, TestUser>(createRepository(db, postEntity), {
   hooks: {
-    beforeCreate: ({ input, context }) => {
+    create: ({ input, context, run }) => {
       if (!context.auth) throw new UnauthorizedError();
-      return { ...input, orgId: context.auth.orgId };
+      return run({ ...input, orgId: context.auth.orgId });
     },
   },
 });
@@ -569,7 +569,7 @@ describe('a ConflictError thrown by business code', () => {
         crudRoutes({
           service: createService(createRepository(db, userEntity), {
             hooks: {
-              beforeCreate: () => {
+              create: () => {
                 throw new ConflictError('Aircraft busy');
               },
             },

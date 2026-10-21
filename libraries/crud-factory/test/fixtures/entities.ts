@@ -14,7 +14,7 @@ export const userEntity = defineEntity(users, {
   softDelete: 'deletedAt',
 });
 
-// `orgId` is the tenant column: clients can't set or move it; a `beforeCreate` hook stamps it.
+// `orgId` is the tenant column: clients can't set or move it; the service's `create` hook stamps it.
 export const postEntity = defineEntity(posts, {
   primaryKey: 'id',
   softDelete: false,

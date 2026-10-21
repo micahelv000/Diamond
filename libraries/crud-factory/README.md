@@ -31,7 +31,7 @@ const userEntity = defineEntity(users, {
 // 2. Repository → 3. Service → 4. Routes. Clients can't write hidden columns, so a hook sets them
 // (here an unusable hash until the user sets a password).
 const userService = createService(createRepository(db, userEntity), {
-  hooks: { beforeCreate: ({ input }) => ({ ...input, passwordHash: '!' }) },
+  hooks: { create: ({ input, run }) => run({ ...input, passwordHash: '!' }) },
 });
 app.register(
   crudRoutes({ service: userService, context: (req) => req.user ?? undefined, authorize: { '*': requireAuth } }),
@@ -286,7 +286,7 @@ crudRoutes({
 so above, an admin of another org deleting a post gets a 404.
 
 **A `'*'` scope does not protect create.** Above, any signed-in caller can create a post with any
-`orgId` in the body, unless the entity omits `orgId` from the create body and a `beforeCreate` hook
+`orgId` in the body, unless the entity omits `orgId` from the create body and a `create` hook
 stamps it from the caller. Nothing warns you when you forget; see [below](#create-and-the-tenant-column).
 
 A rule gets `{ context, op, id?, input? }` and returns:
@@ -309,9 +309,9 @@ const postEntity = defineEntity(posts, {
 });
 const postService = createService<typeof postEntity, Caller>(createRepository(db, postEntity), {
   hooks: {
-    beforeCreate: ({ input, context }) => {
+    create: ({ input, context, run }) => {
       if (!context.auth) throw new UnauthorizedError();
-      return { ...input, orgId: context.auth.orgId };
+      return run({ ...input, orgId: context.auth.orgId });
     },
   },
 });
@@ -329,7 +329,7 @@ stored on `request.crudContext` (`{ auth, scope }`).
 | Layer | How | Use it for |
 |---|---|---|
 | Repository | `createRepository(db, entity).extend(({ scoped, table, columns, orderBy }) => ({ … }))` | joins, window functions, reports. Base methods, finders included, can't be overridden (compile error). |
-| Service | `createService(repo, { hooks: { beforeCreate, afterCreate, … } })` | stamping `createdBy`/`orgId` from `context.auth`, hashing, normalising input, blocking a delete, follow-up writes. See [Service hooks](#service-hooks). |
+| Service | `createService(repo, { hooks: { create, update, delete } })` | stamping `createdBy`/`orgId` from `context.auth`, hashing, normalising input, blocking a delete, follow-up writes. See [Service hooks](#service-hooks). |
 | Service | `createService(repo).extend((base) => ({ … }))` | business operations built from the CRUD methods (`delayFlight`, a two-leg booking). Built-in names can't be reused (compile error). |
 | Routes | `crudRoutes({ …, extend: (scope, { service, entity, serviceContext }) => { … } })` | custom endpoints that share the validation, error handler and authorization. |
 
@@ -382,43 +382,41 @@ inside `b`'s factory the first argument already has `a`'s.
 
 ### Service hooks
 
-Hooks run on every create, update and delete made through the service: the built-in methods, and custom
-service methods that call `base.create`, `base.update` or `base.delete`. Finders and calls on
-`service.repository` skip them. Each hook gets the caller's `context` and a `state` object, and may be async.
+A hook wraps one write: `create`, `update` or `delete`. It runs on every such call made through the service:
+the built-in methods, and custom service methods that call `base.create`, `base.update` or `base.delete`.
+Finders and calls on `service.repository` skip them. Each hook gets the caller's `context`, the service's
+`repository` (custom methods included; pass `context.transaction` and `context.scope` to its calls) and a `run`
+function that does the write. Code before `run` runs before the write, code after it runs after, and plain
+local variables carry values from one side to the other. The hook returns the row the caller gets, usually
+`run`'s. Without a hook, the service just runs the write.
 
-| Hook | Runs | Receives | Returns |
-|---|---|---|---|
-| `beforeCreate` | before the insert | `{ input, context }` | the full row to insert |
-| `afterCreate` | after the insert | `{ row, input, context }`: the saved row and the client's input | nothing (ignored) |
-| `beforeUpdate` | before the update | `{ id, patch, context }` | the changes to save |
-| `afterUpdate` | after the update | `{ id, row, patch, context }`: the saved row and the client's changes | nothing (ignored) |
-| `beforeDelete` | before the delete | `{ id, context }`; read the row yourself if you need it | nothing; throw to block |
-| `afterDelete` | after the delete, soft or hard | `{ id, row, context }`: the deleted row | nothing (ignored) |
-
-Every hook in the table also gets `state`. Each create, update or delete gets a new `state`, and its before
-and after hooks share it, so a value worked out before the write can be read after it. The `state` option
-creates it and sets its type; without the option, `state` is an empty object you can't write to:
+| Hook | Receives | `run` |
+|---|---|---|
+| `create` | `{ input, context, repository, run }` | `run()` inserts `input` as-is; `run(row)` inserts that full row instead |
+| `update` | `{ id, patch, context, repository, run }` | `run()` saves `patch` as-is; `run(changes)` saves those changes instead |
+| `delete` | `{ id, context, repository, run }`; read the row with `repository` if you need it | `run()` deletes, soft or hard, and returns the deleted row |
 
 ```ts
 createService(flightRepo, {
-  state: () => ({ previousStatus: undefined as string | undefined }),
   hooks: {
-    beforeUpdate: async ({ id, patch, context, state }) => {
-      const before = await flightRepo.findById(id, { columns: ['status'], transaction: context.transaction });
-      state.previousStatus = before?.status;
-      return patch;
+    update: async ({ id, context, repository, run }) => {
+      const before = await repository.findById(id, { columns: ['status'], transaction: context.transaction });
+      const row = await run();
+      notify(`${before?.status} -> ${row.status}`);
+      return row;
     },
-    afterUpdate: ({ row, state }) => notify(`${state.previousStatus} -> ${row.status}`),
   },
 });
 ```
 
-With explicit type arguments, pass the state type fourth: `createService<typeof flightEntity, Caller, typeof flightRepo, FlightHookState>`.
-State is never shared between calls, not even two calls with the same `context`.
+Call `run` exactly once: calling it twice, or returning without calling it, throws. To reject the write,
+throw. Inside a [transaction](#transactions) (every route, by default) a throwing hook rolls back the
+write as well. Work done outside the database, such as sending emails or events, can't be rolled back.
 
-Throw from any hook to fail the call. Inside a
-[transaction](#transactions) (every route, by default) a throwing hook rolls back the write as well.
-Work done outside the database, such as sending emails or events, can't be rolled back.
+Don't catch `run`'s database errors inside a transaction. A failed statement aborts the transaction, so a
+hook that catches one and still returns would report success for writes Postgres rolled back. The service
+throws instead, with the original error as `cause`. A `NotFoundError` for a missing row aborts nothing and
+can be caught. Outside a transaction, catching is safe.
 
 ### Service methods
 
@@ -487,7 +485,7 @@ what makes a custom route with several writes all-or-nothing.
 
 `serviceContext(request)` carries the transaction (`context.transaction`), so pass it to every call in the route:
 other entities' services, `service.repository` methods, and your own helpers. Service hooks get the
-same `context`, so a write in `beforeCreate` joins it too, and a throwing `afterCreate` rolls back the insert. Custom repository methods join it too when
+same `context`, so a write in a `create` hook joins it too, and a hook that throws after `run()` rolls back the insert. Custom repository methods join it too when
 they take the `context` and pass it to `scoped` (see [Extension points](#extension-points)).
 
 ```ts
@@ -589,7 +587,7 @@ crudRoutes({
       service.delayFlight(request.params.id, 30, serviceContext(request), request.log));
   },
 });
-// in createService(…, { hooks: { afterCreate: ({ row, context }) => context.auth?.log.info({ id: row.id }, 'flight scheduled') } })
+// in createService(…, { hooks: { create: async ({ context, run }) => { const row = await run(); context.auth?.log.info({ id: row.id }, 'flight scheduled'); return row; } } })
 ```
 
 `examples/flights.ts` does both.
