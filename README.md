@@ -1,4 +1,3 @@
-
 # Diamond
 
  A central repository for the **Diamond team** to store utilities, tools, experiments, and developments created in the **White Network** for the Team.

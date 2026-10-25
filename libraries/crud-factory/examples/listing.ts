@@ -1,0 +1,180 @@
+// Run with: npx tsx examples/listing.ts
+// The list route (`GET /`): URL filters, sorting, offset paging and cursor paging.
+import { PGlite } from '@electric-sql/pglite';
+import { boolean, integer, pgEnum, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import { drizzle } from 'drizzle-orm/pglite';
+import Fastify from 'fastify';
+import { createRepository, createService, defineEntity } from '@diamond/crud-factory';
+import { crudRoutes } from '@diamond/crud-factory/fastify';
+
+// 1. A products table with a few rows that share a price, so sorting and paging have ties to handle.
+const category = pgEnum('category', ['book', 'game', 'toy']);
+const products = pgTable('products', {
+  id: integer().primaryKey().generatedAlwaysAsIdentity(),
+  name: text().notNull(),
+  category: category().notNull(),
+  price: integer().notNull(),
+  inStock: boolean('in_stock').notNull(),
+  releasedAt: timestamp('released_at', { withTimezone: true }).notNull(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }), // soft delete uses it by default
+});
+
+const client = new PGlite();
+await client.exec(`
+  create type category as enum ('book', 'game', 'toy');
+  create table products (
+    id integer primary key generated always as identity, name text not null, category category not null,
+    price integer not null, in_stock boolean not null, released_at timestamptz not null, deleted_at timestamptz
+  );
+  insert into products (name, category, price, in_stock, released_at) values
+    ('Atlas', 'book', 30, true, '2026-01-10T00:00:00Z'),
+    ('Blocks', 'toy', 15, true, '2026-02-01T00:00:00Z'),
+    ('Chess', 'game', 25, false, '2026-02-15T00:00:00Z'),
+    ('Dune', 'book', 20, true, '2026-03-01T00:00:00Z'),
+    ('Express', 'game', 40, true, '2026-03-20T00:00:00Z'),
+    ('Frisbee', 'toy', 15, false, '2026-04-05T00:00:00Z'),
+    ('Go', 'game', 25, true, '2026-04-18T00:00:00Z'),
+    ('Hamlet', 'book', 10, true, '2026-05-02T00:00:00Z'),
+    ('Kite', 'toy', 15, true, '2026-05-30T00:00:00Z'),
+    ('Ludo', 'game', 25, true, '2026-06-12T00:00:00Z'),
+    ('Moby Dick', 'book', 20, false, '2026-07-01T00:00:00Z'),
+    ('Nerf', 'toy', 35, true, '2026-07-21T00:00:00Z');
+`);
+const db = drizzle({ client });
+
+// 2. What the list route accepts. Every operator in `filterable` becomes a `column__operator` query
+// parameter, and only `sortable` columns can be used in `?sort=`. Small page sizes make paging visible.
+const productEntity = defineEntity(products, {
+  primaryKey: 'id',
+  create: { omit: ['id'] },
+  filterable: {
+    category: ['eq', 'in'],
+    name: ['ilike'],
+    price: ['gte', 'lte'],
+    inStock: ['eq'],
+    releasedAt: ['gte', 'lte'],
+  },
+  sortable: ['name', 'price', 'releasedAt'],
+  defaultSort: 'name',
+  pagination: { defaultLimit: 4, maxLimit: 5 },
+});
+
+// 3. The app. No `authorize`, so the routes are open; this example is only about listing.
+const app = Fastify();
+const productRoutes = crudRoutes({ service: createService(createRepository(db, productEntity)) });
+await app.register(productRoutes, { prefix: '/products' });
+// `productRoutes.list` calls the list route with a query object checked against `filterable` and `sortable`.
+
+// 4. Helpers that print one readable line per request.
+interface ProductRow {
+  name?: string;
+  price?: number;
+}
+interface ListBody {
+  items?: ProductRow[];
+  limit?: number;
+  offset?: number;
+  total?: number;
+  nextCursor?: string | null;
+  code?: string;
+  message?: string;
+}
+
+function describe(row: ProductRow): string {
+  if (row.price === undefined) {
+    return String(row.name);
+  }
+  return `${row.name} (${row.price})`;
+}
+
+function summarize(body: ListBody): string {
+  if (!body.items) {
+    return `${body.code}: ${body.message}`;
+  }
+  const names = body.items.map(describe).join(', ');
+  const cursor = body.nextCursor ? `${body.nextCursor.slice(0, 10)}…` : 'null';
+  const total = body.total === undefined ? '' : ` total=${body.total}`;
+  return `[${names}] limit=${body.limit} offset=${body.offset}${total} nextCursor=${cursor}`;
+}
+
+interface ListResponse {
+  statusCode: number;
+  raw: { req: { url?: string } };
+  json(): ListBody;
+}
+
+// Prints the request URL, the status and a summary of the page, then returns the body.
+async function list(pending: Promise<ListResponse>): Promise<ListBody> {
+  const response = await pending;
+  const body = response.json();
+  console.log(`GET ${response.raw.req.url} → ${response.statusCode}  ${summarize(body)}`);
+  return body;
+}
+
+// For requests the types would reject: these deliberately bypass them to show the route's own checks.
+function rawList(query: string): Promise<ListResponse> {
+  return app.inject({ method: 'GET', url: `/products?${query}` });
+}
+
+function section(title: string): void {
+  console.log(`\n=== ${title}`);
+}
+
+// 5. URL filters.
+section('URL filters');
+await list(productRoutes.list({ category__eq: 'book' }));
+await list(productRoutes.list({ category__in: ['game', 'toy'] }));
+await list(rawList('category__in=game&category__in=toy')); // a repeated parameter works like a comma list
+await list(productRoutes.list({ name__ilike: 'o' }));
+await list(productRoutes.list({ price__gte: 20, price__lte: 30 }));
+await list(productRoutes.list({ inStock__eq: false }));
+await list(productRoutes.list({ releasedAt__gte: new Date('2026-03-01T00:00:00Z'), releasedAt__lte: new Date('2026-05-31T23:59:59Z') }));
+await list(productRoutes.list({ category__eq: 'game', inStock__eq: true, price__lte: 25 })); // filters combine with AND
+await list(rawList('category__eq=')); // a blank value means "no filter"
+
+section('Rejected filters (400)');
+await list(rawList('color__eq=red')); // not a column in `filterable`
+await list(rawList('price__eq=25')); // `price` doesn't allow `eq`
+await list(rawList('category__eq=car')); // not a valid enum value
+await list(rawList('releasedAt__gte=2026-02-30T00:00:00Z')); // not a real date
+await list(rawList('price__gte=cheap')); // not a number
+
+// 6. Sorting. `-` means descending; ties are broken by the primary key, so the order is always stable.
+section('Sorting');
+await list(productRoutes.list({ sort: ['-price'] }));
+await list(productRoutes.list({ sort: ['price', 'name'] }));
+await list(rawList('sort=category')); // 400: `category` isn't in `sortable`
+
+// 7. Offset paging: `limit` rows after skipping `offset` rows.
+section('Offset paging');
+await list(productRoutes.list()); // the default page size is 4
+await list(productRoutes.list({ limit: 2, offset: 2 }));
+await list(productRoutes.list({ limit: 50 })); // capped at maxLimit (5)
+await list(productRoutes.list({ limit: 3, total: true })); // `total` counts every matching row, not just this page
+
+// 8. Cursor paging: follow `nextCursor` until it is null. Each page starts right after the previous
+// one, so rows are never repeated or skipped, even with ties or new rows added between requests.
+section('Cursor paging: every page, sorted by price');
+const byPrice = (cursor?: string) => productRoutes.list({ sort: ['price'], limit: 4, fields: ['name', 'price'], cursor });
+let page = await list(byPrice());
+while (page.nextCursor) {
+  page = await list(byPrice(page.nextCursor));
+}
+
+section('Cursor paging with filters');
+const gamesAndToys = (cursor?: string) =>
+  productRoutes.list({ category__in: ['game', 'toy'], sort: ['-price'], limit: 3, fields: ['name', 'price'], cursor });
+page = await list(gamesAndToys());
+while (page.nextCursor) {
+  page = await list(gamesAndToys(page.nextCursor));
+}
+
+section('Rejected cursors (400)');
+const first = await list(productRoutes.list({ sort: ['price'], limit: 2 }));
+const cursor = first.nextCursor ?? undefined;
+await list(productRoutes.list({ sort: ['-price'], limit: 2, cursor })); // made for a different sort
+await list(productRoutes.list({ sort: ['price'], limit: 2, offset: 2, cursor })); // cursor and offset together
+await list(productRoutes.list({ sort: ['price'], limit: 2, cursor: 'not-a-real-cursor' }));
+
+await app.close();
+await client.close();

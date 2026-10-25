@@ -1,0 +1,21 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "vitest", "import"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "vitest/valid-expect": ["error", { "maxArgs": 2 }]
+  },
+  "overrides": [
+    {
+      "files": ["test/**"],
+      "rules": {
+        "vitest/expect-expect": "off",
+        "eslint/no-shadow": "off"
+      }
+    }
+  ],
+  "ignorePatterns": [".claude/**", "node_modules/**"]
+}
